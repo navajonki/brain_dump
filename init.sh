@@ -33,11 +33,3 @@ pip install openai whisper chromadb pyyaml neo4j tiktoken spacy
 # pip install openai
 # (Then load spaCy models if you're using spaCy for topic/keyword extraction)
 python -m spacy download en_core_web_sm
-
-# dbms: zettelkasten_dbms
-# dbms password: mappafulk3
-
-export OPENAI_API_KEY="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"
-export NEO4J_URI="bolt://localhost:7687"
-export NEO4J_USER="neo4j"
-export NEO4J_PASSWORD="mappafulk3"
