@@ -112,8 +112,7 @@ zettelkasten/
 │   │   ├── prompts.py       # Default chunking prompts
 │   │   └── prompts_mistral.py # Mistral-specific prompts
 ├── core/                    # Core processing modules
-│   ├── chunking.py          # Basic chunking (v1)
-│   ├── chunking_v2.py       # Advanced atomic chunking
+│   ├── chunking.py          # Advanced atomic chunking implementation
 │   ├── llm_backends/        # LLM provider implementations
 │   ├── prompts/             # Centralized prompt system
 │   │   ├── registry.py      # Template registry
@@ -170,10 +169,10 @@ Alice mentioned that the Acme Corp project timeline needs to be adjusted to acco
 pytest
 
 # Run specific test
-pytest tests/test_chunking_v2.py -v
+pytest tests/test_chunking_atomic.py -v
 
 # Run with specific config
-python tests/test_chunking_v2.py tests/data/sample_transcript.txt --config config/chunking/openai.yaml
+python tests/test_chunking_atomic.py tests/data/sample_transcript.txt --config config/chunking/openai.yaml
 
 # Test the prompt system
 python tests/test_prompts.py

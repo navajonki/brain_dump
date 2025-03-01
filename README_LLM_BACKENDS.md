@@ -56,13 +56,13 @@ To use a specific backend, simply specify the appropriate configuration file whe
 
 ```bash
 # Run with OpenAI
-python tests/test_chunking_v2.py input.txt --config config/chunking/openai_gpt35.yaml
+python tests/test_chunking_atomic.py input.txt --config config/chunking/openai_gpt35.yaml
 
 # Run with Replicate
-python tests/test_chunking_v2.py input.txt --config config/chunking/replicate_mistral_instruct.yaml
+python tests/test_chunking_atomic.py input.txt --config config/chunking/replicate_mistral_instruct.yaml
 
 # Run with Ollama
-python tests/test_chunking_v2.py input.txt --config config/chunking/ollama_mistral.yaml
+python tests/test_chunking_atomic.py input.txt --config config/chunking/ollama_mistral.yaml
 ```
 
 ## Implementation Details
@@ -75,7 +75,7 @@ The backend architecture is implemented through several key components:
 
 3. **Environment Variables** - API keys are loaded from the `.env` file using python-dotenv.
 
-4. **Chunker Integration** - The `AtomicChunker` class in `core/chunking_v2.py` uses the factory function to initialize the appropriate backend based on configuration.
+4. **Chunker Integration** - The `TextChunker` class in `core/chunking.py` uses the factory function to initialize the appropriate backend based on configuration.
 
 ## Adding New Backends
 
@@ -83,7 +83,7 @@ To add a new LLM backend:
 
 1. Create a new backend class in `core/llm_backends/`
 2. Update the factory function in `core/llm_backends/__init__.py`
-3. Update the `_call_llm` method in `core/chunking_v2.py` to handle the new backend type
+3. Update the `_call_llm` method in `core/chunking.py` to handle the new backend type
 4. Create example configuration files in `config/chunking/`
 
 ## Testing

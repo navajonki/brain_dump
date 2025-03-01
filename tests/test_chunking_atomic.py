@@ -8,7 +8,7 @@ import os
 project_root = Path(__file__).parents[1]
 sys.path.append(str(project_root))
 
-from core.chunking_v2 import AtomicChunker
+from core.chunking import TextChunker
 from utils.logging import get_logger
 from config.chunking.chunking_config import ChunkingConfig
 
@@ -34,7 +34,7 @@ def test_atomic_chunking(
     
     # Initialize chunker with config
     config = ChunkingConfig(**config_data)
-    chunker = AtomicChunker(config)
+    chunker = TextChunker(config)
     
     # Read transcript
     with open(transcript_file, 'r') as f:

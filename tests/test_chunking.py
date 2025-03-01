@@ -8,7 +8,7 @@ from pathlib import Path
 project_root = Path(__file__).parent.parent
 sys.path.append(str(project_root))
 
-from core.chunking_v2 import AtomicChunker
+from core.chunking import TextChunker
 from config.chunking.chunking_config import ChunkingConfig
 from utils.logging import get_logger
 

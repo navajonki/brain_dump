@@ -184,7 +184,7 @@ class TestChunkerIntegration(unittest.TestCase):
     def test_chunker_prompt_usage(self):
         """Test that the AtomicChunker uses the centralized prompt system."""
         # Import here to avoid circular imports with the patching
-        from core.chunking_v2 import AtomicChunker
+        from core.chunking import TextChunker
         
         # Create a config with a custom first pass prompt
         custom_prompt = "Custom prompt with {window_text}"
@@ -195,7 +195,7 @@ class TestChunkerIntegration(unittest.TestCase):
         )
         
         # Create a chunker with the config
-        chunker = AtomicChunker(config)
+        chunker = TextChunker(config)
         
         # Check that the prompt registry was properly set up
         self.assertTrue(chunker.config.prompt_registry.has_template("first_pass"))
