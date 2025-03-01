@@ -1,0 +1,7 @@
+README.md
+setup.py
+zettel.egg-info/PKG-INFO
+zettel.egg-info/SOURCES.txt
+zettel.egg-info/dependency_links.txt
+zettel.egg-info/requires.txt
+zettel.egg-info/top_level.txt

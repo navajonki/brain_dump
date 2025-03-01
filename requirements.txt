@@ -1,0 +1,39 @@
+# Core dependencies
+openai>=1.0.0
+git+https://github.com/openai/whisper.git  # Install whisper from GitHub
+deepgram-sdk>=2.11.0
+pyyaml>=6.0.0
+tiktoken>=0.5.0
+chromadb==0.4.22
+neo4j==5.14.1
+python-dotenv>=1.0.0
+pydub==0.25.1
+setuptools>=68.0.0
+jsonschema>=4.20.0  # For JSON schema validation
+requests>=2.31.0  # For making HTTP requests to Ollama
+replicate>=0.22.0  # For Replicate API integration
+
+# PyTorch - system specific
+--pre  # Enable pre-releases for Apple Silicon optimizations
+--index-url https://download.pytorch.org/whl/nightly/cpu
+torch>=2.0.0
+torchvision>=0.15.0
+torchaudio>=2.0.0
+
+# Audio processing
+ffmpeg-python>=0.2.0  # For Whisper audio processing
+soundfile>=0.12.1    # For audio duration detection
+
+# Utilities
+pytz>=2023.3        # For timezone handling
+tqdm>=4.65.0        # For progress bars
+more-itertools>=10.1.0
+
+# Testing dependencies
+pytest==7.4.3
+pytest-asyncio==0.21.1
+
+# Optional dependencies
+# spacy==3.7.2  # Commented out as optional 
+
+# Remove from here 

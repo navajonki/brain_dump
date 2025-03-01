@@ -1,0 +1,154 @@
+<Initial requirements>
+I want to create a voice note taking system that takes audio recordings of voice notes, somehow stores them in a way that can be both read by a human and can be retrieved by an LLM later. Here are some ideas for how this might work:
+- The voice is transcribed
+- The raw transcription is chunked into atomic pieces of information, kind of like zellekasten. Let's call these units "chunks". Chunks that are generated are stored using markdown, compatible with a system like Obsidian.
+- Each chunk has associated metadata, including some kind of pointer to the portion of the transcript it's taken from, the session data & id, and other relevant info. Chunks also have pointers to other chunks that are are related.
+- These chunks are read into either a vector database or a graph database
+- The LLM that's reading from them accesses the database.
+- Humans can access the chunks either through Obsidian or any other markdown system.
+
+<Phase 1 - Initial implementation>
+Below is a bird’s-eye view of a possible workflow:
+
+1. Capture & Transcribe Audio
+
+Use a transcription service (e.g., OpenAI Whisper, Google Cloud Speech-to-Text, or AssemblyAI).
+Obtain the full text and timestamps for each sentence/segment.
+
+2. Pre-Processing & Chunking
+
+Decide on chunking strategies (size-based, sentence-based, semantic-based).
+Generate a short unique ID for each chunk (e.g., a timestamp-based ID or UUID).
+Summarize each chunk or create an “atomic concept” from it.
+
+3. Markdown Export with Metadata
+
+For each chunk, create a Markdown file.
+Store its metadata as YAML front matter (e.g., id, source_file, timestamp_range, tags, links, etc.).
+Optional: store a short summary or key points in the metadata.
+
+4. Ingest into a Vector Store
+
+Use a library like FAISS, Milvus, Pinecone, Weaviate, or Chroma to embed each chunk.
+Store embeddings and metadata.
+
+5. Ingest into a Graph DB (Optional but Recommended)
+
+If you want richer relationships: store node = chunk, edges = relationships or references.
+Tools: Neo4j, TypeDB, or even a local knowledge graph plugin in Obsidian.
+
+6. Query & Retrieval
+
+Use an LLM retrieval pipeline (e.g., “retrieval-augmented generation”).
+For a user’s query, embed the query, find top-k relevant chunks in your vector store (or via graph-based similarity), then feed them back into the LLM as context.
+
+
+7. Human Access in Obsidian
+
+Each chunk is an individual .md file.
+Use backlinks ([[chunk-id]]) for explicit linking.
+Obsidian or any Markdown knowledge base can automatically visualize your chunk graph.
+
+<Phase 2 - chunking optimization>
+Then, there was the following issue:
+
+Right now, the issue is that there are too many chunks with just one or two phrases.
+For example, if the transcript says something like:
+
+[16.34 - 18.57] Alright. Jennifer. Jennifer, where'd you grow up? Where are you from originally? I grew up in Colorado. I graduated from a tiny little high school with 79 people in my graduating class. Tell me about your family.
+[94.24 - 96.64] You know, normal family I guess. Two brothers, mom, dad. I joined the military at 17 to kinda just get away from the small town and see what I could make of myself. You joined the military in how long was that? Five years. Five years? Yeah. That was a good experience? Yeah. It's like the best of times, worst of times. Right? Mhmm. How would you describe your childhood in general? It was rough. You know, like money's Money was hard. Money was tight. Education in short supply, know. So it's kinda hard scrabble I guess you'd say. What was your relationship like with your mom and dad? My mom, she's she's a good person. She's she always encourages me whatever I wanted to do. Know, like, oh you could be an astronaut. Like, mom I'm not that smart. I couldn't have been an astronaut. But yeah, she was good and my dad's just you know, he is who he is. Which is what? Which is not worthy of mention. Honestly.
+[97.76 - 100.26] And then after the military?
+
+The atomic units would be something along the lines of:
+- Jennifer grew up in Colorado
+- She graduated from a tiny little high school with 79 people in my graduating class
+- She grew up with two brothers, a mom and a dad
+- She joined the military at 17 to kinda just get away from the small town to see what she could make of herself
+
+etc.
+
+Let's call these atomic units "chunks." The chunks should be exhaustive - if there's a piece of information in the transcript, it should be included in a chunk. They should also be atomic - a chunk should contain one piece of information.
+
+
+
+To address this, here's more sophisticated approach:
+1. Segment the Transcript (“Sliding Window”)
+
+Goal: Manage large transcripts and stay within model context limits.
+Process: Break the transcript into smaller sections (e.g., 500–1,000 tokens each). Include a small overlap (e.g., the last 50–100 words of the previous segment repeated in the next) to avoid losing context at the boundaries.
+
+2. First Pass on Each Window
+
+Goal: Extract the main “atomic facts” in a straightforward listing.
+
+Prompt Example (for each segment):
+
+“Here is a portion of the transcript:
+[Insert segment text]
+List all distinct, atomic pieces of information found in this text, each as a separate bullet point. Include any relevant metadata (e.g., references to people, places, or times).”
+
+Output: A list of atomic facts from that particular window.
+
+3. Second Pass Q&A on Each Window
+
+Goal: Clarify or capture overlooked details.
+
+Prompt Example (for each segment, after reviewing the first pass output):
+
+“Here is the list of atomic facts you extracted from the previous text:
+[Insert the first-pass bullet list]
+Is there any additional context regarding the people, places, or timeline mentioned in the text that is not captured above? List any further atomic facts.”
+
+If the transcript is fairly straightforward, you can skip this step for segments that are clearly complete.
+
+If the content is more complex (e.g., multiple speakers, subtle context), use this second prompt to probe for missing details.
+
+4. Combine and De-Duplicate
+
+Goal: Merge outputs across all windows into a single master list.
+Because of overlaps between windows, you may have repeated atomic facts.
+Process: De-duplicate or merge similar facts so they appear only once.
+
+5 Global Q&A or Summary Check
+
+Goal: Ensure continuity across windows. Sometimes context from Window 1 can relate to Window 3, etc.
+Process: You can run a final, single “global check” prompt providing the combined atomic list and asking if there are any contradictory or interlinked facts that need resolution.
+
+
+I'd like you to create a new file that captures this chunking process - call it chunking_v2.py, and a test_chunking_v2.py to test it out.
+
+
+
+<PHASE 3 - further optimizations>
+Then the following issues needed to be changed
+-----
+Prompt changes:
+- Consider tense of conversation - if someone is using present tense, that could still relate to something in the past
+- Chunks should be legible on their own, even if read without any of the other chunks. For example, avoid ambiguous words like "she" or "it" instead spelling out the specific person or thing referred to.
+
+- Chunk pass - identify tags & topics 
+- Connection pass: - identify which chunks are related to each other\
+- Metrics log file should contain elapsed time and estimate of time required until next completion
+- Metrics log file should end with summary of how many calls were made and how many tokens were sent / generated
+- Each chunk should point to a specific portion of the transcript
+- The context of the recording should somehow be established 
+
+
+
+
+----
+- Ambgiguoous pronouns are still being used
+- JSON returns commented lines which break the interpreter
+- Use the instruct version of mistral
+- How are the links to the text being handled? They should be saved as the chunks are being created, not going back and reviewing from scratch.
+
+
+These two next please:
+Add the transcript position tracking (to link facts back to specific timestamps)?
+Implement the semantic relationship detection between chunks?
+
+Then, run a test of the process so far. Make sure of the following:
+- Ensure log files are being populated correctly
+- Ensure chunk files are well formed. They should each have 1 distinct piece of atomic information, tags & topics, and links to related chunks.
+
+If you encounter any errors, try to fix them, and then re-run the process. If the process completes without errors, grade all the output files. If any are not up to par, suggest improvements.

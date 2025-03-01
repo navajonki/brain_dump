@@ -1,0 +1,1590 @@
+from typing import List, Dict, Any, Optional, Tuple
+import tiktoken
+import re
+import openai
+import time
+import requests
+from pathlib import Path
+from datetime import datetime, timedelta
+import json
+import os
+import sys
+from dotenv import load_dotenv
+from utils.logging import get_logger
+from utils.file_ops import OutputManager
+from config.chunking.chunking_config import ChunkingConfig
+from config.chunking.prompts import (
+    FIRST_PASS_PROMPT, 
+    SECOND_PASS_PROMPT, 
+    GLOBAL_CHECK_PROMPT,
+    TAGGING_PROMPT,
+    RELATIONSHIP_PROMPT
+)
+import jsonschema
+from core.llm_backends import create_llm_backend
+
+# Load environment variables
+load_dotenv()
+
+class AtomicChunker:
+    """
+    A chunker that extracts atomic units of information from transcripts
+    using a sliding window approach with multiple passes.
+    """
+    
+    def __init__(self, config: ChunkingConfig = None):
+        self.config = config or ChunkingConfig()
+        self.encoder = tiktoken.encoding_for_model("gpt-3.5-turbo")
+        self.logger = get_logger(__name__)
+        self.output_mgr = None
+        
+        # Initialize the appropriate LLM backend based on configuration
+        self._initialize_llm_backend()
+    
+    def _initialize_llm_backend(self):
+        """Initialize the LLM backend based on configuration."""
+        from core.llm_backends import create_llm_backend
+        
+        # Get the backend type from config
+        backend_type = self.config.llm_backend
+        
+        if not backend_type:
+            # Default to OpenAI if not specified
+            backend_type = "openai"
+            self.logger.warning(f"No LLM backend specified, defaulting to {backend_type}")
+        
+        try:
+            # Create the backend using the factory function
+            self.llm_backend = create_llm_backend(backend_type)
+            self.logger.info(f"Initialized {backend_type} LLM backend")
+        except Exception as e:
+            self.logger.error(f"Failed to initialize {backend_type} LLM backend: {str(e)}")
+            raise
+    
+    def _get_metadata(self) -> dict:
+        """Get metadata about the current processing run"""
+        return {
+            "model": self.config.model,
+            "llm_backend": getattr(self.config, 'llm_backend', 'unknown'),
+            "max_tokens": getattr(self.config, 'max_tokens', None),
+            "use_semantic_chunking": getattr(self.config, 'use_semantic_chunking', False),
+            "temperature": getattr(self.config, 'temperature', None),
+            "max_response_tokens": getattr(self.config, 'max_response_tokens', None),
+            "ollama_url": getattr(self.config, 'ollama_url', None),
+            "window_size": getattr(self.config, 'window_size', 1000),
+            "overlap_size": getattr(self.config, 'overlap_size', 100)
+        }
+    
+    def _call_llm(self, prompt, max_retries=3):
+        """
+        Call the LLM with the given prompt and handle the response.
+        
+        Args:
+            prompt (str): The prompt to send to the LLM
+            max_retries (int): Maximum number of retries if the call fails
+            
+        Returns:
+            The parsed response from the LLM
+        """
+        if not self.llm_backend:
+            self.logger.error("LLM backend not initialized")
+            return None
+            
+        # Log the prompt for debugging
+        self.logger.debug(f"Calling LLM with prompt (first 500 chars): {prompt[:500]}...")
+        
+        # Try to call the LLM with retries
+        for attempt in range(max_retries):
+            try:
+                response = self.llm_backend.call(prompt)
+                
+                # Log the response for debugging
+                if isinstance(response, str):
+                    self.logger.debug(f"LLM response (first 500 chars): {response[:500]}...")
+                else:
+                    self.logger.debug(f"LLM response type: {type(response)}")
+                
+                # Return the response
+                return response
+            except Exception as e:
+                self.logger.error(f"Error calling LLM (attempt {attempt+1}/{max_retries}): {str(e)}")
+                if attempt == max_retries - 1:
+                    # Last attempt failed
+                    self.logger.error(f"Failed to call LLM after {max_retries} attempts")
+                    return None
+                    
+                # Wait before retrying
+                time.sleep(1)
+                
+        # Should not reach here, but just in case
+        return None
+    
+    def _split_text_into_windows(self, text: str) -> List[Tuple[str, int, int]]:
+        """
+        Split text into overlapping windows.
+        Returns a list of tuples (window_text, start_token, end_token)
+        
+        This is a wrapper around _create_windows for backward compatibility.
+        """
+        return self._create_windows(text)
+    
+    def _create_windows(self, text: str) -> List[Tuple[str, int, int]]:
+        """
+        Split text into overlapping windows.
+        Returns a list of tuples (window_text, start_token, end_token)
+        """
+        try:
+            # Debug: Log tokenization start
+            debug_msg = f"DEBUG: Starting text tokenization, text length: {len(text)} characters"
+            self.logger.info(debug_msg)
+            if self.output_mgr:
+                self.output_mgr.log_debug(debug_msg)
+            
+            # Tokenize with timeout protection
+            tokenization_start = time.time()
+            tokens = self.encoder.encode(text)
+            tokenization_time = time.time() - tokenization_start
+            
+            # Debug: Log tokenization completion
+            debug_msg = f"DEBUG: Tokenization complete, got {len(tokens)} tokens in {tokenization_time:.2f}s"
+            self.logger.info(debug_msg)
+            if self.output_mgr:
+                self.output_mgr.log_debug(debug_msg)
+            
+            windows = []
+            
+            # Debug: Log window creation start
+            debug_msg = f"DEBUG: Starting window creation with window_size={self.config.window_size}, overlap={self.config.overlap_size}"
+            self.logger.info(debug_msg)
+            if self.output_mgr:
+                self.output_mgr.log_debug(debug_msg)
+            
+            # Limit the number of windows for safety
+            max_windows = 100
+            window_count = 0
+            
+            start_idx = 0
+            while start_idx < len(tokens):
+                # Debug: Log current window
+                debug_msg = f"DEBUG: Creating window {window_count+1}, start_idx={start_idx}"
+                self.logger.info(debug_msg)
+                if self.output_mgr:
+                    self.output_mgr.log_debug(debug_msg)
+                
+                end_idx = min(start_idx + self.config.window_size, len(tokens))
+                
+                # Debug: Log window indices
+                debug_msg = f"DEBUG: Window {window_count+1} indices: {start_idx}-{end_idx}, length={end_idx-start_idx} tokens"
+                self.logger.info(debug_msg)
+                if self.output_mgr:
+                    self.output_mgr.log_debug(debug_msg)
+                
+                window_tokens = tokens[start_idx:end_idx]
+                
+                # Debug: Log decoding start
+                debug_msg = f"DEBUG: Decoding window {window_count+1} with {len(window_tokens)} tokens"
+                self.logger.info(debug_msg)
+                if self.output_mgr:
+                    self.output_mgr.log_debug(debug_msg)
+                
+                # Decode with timeout protection
+                decode_start = time.time()
+                window_text = self.encoder.decode(window_tokens)
+                decode_time = time.time() - decode_start
+                
+                # Debug: Log decoding completion
+                debug_msg = f"DEBUG: Decoded window {window_count+1}, got {len(window_text)} characters in {decode_time:.2f}s"
+                self.logger.info(debug_msg)
+                if self.output_mgr:
+                    self.output_mgr.log_debug(debug_msg)
+                
+                windows.append((window_text, start_idx, end_idx))
+                
+                # Move to next window with overlap
+                prev_start_idx = start_idx
+                start_idx = end_idx - self.config.overlap_size
+                
+                # Safety check to prevent infinite loops
+                if start_idx <= prev_start_idx or start_idx >= len(tokens):
+                    debug_msg = f"DEBUG: Breaking window creation loop, start_idx={start_idx}, prev_start_idx={prev_start_idx}, len(tokens)={len(tokens)}"
+                    self.logger.info(debug_msg)
+                    if self.output_mgr:
+                        self.output_mgr.log_debug(debug_msg)
+                    break
+                
+                window_count += 1
+                
+                # Safety limit on number of windows
+                if window_count >= max_windows:
+                    debug_msg = f"DEBUG: Reached maximum window count ({max_windows}), stopping window creation"
+                    self.logger.warning(debug_msg)
+                    if self.output_mgr:
+                        self.output_mgr.log_debug(debug_msg)
+                    break
+            
+            # Debug: Log window creation completion
+            debug_msg = f"DEBUG: Window creation complete, created {len(windows)} windows"
+            self.logger.info(debug_msg)
+            if self.output_mgr:
+                self.output_mgr.log_debug(debug_msg)
+            
+            return windows
+            
+        except Exception as e:
+            error_msg = f"ERROR in _create_windows: {str(e)}"
+            self.logger.error(error_msg)
+            if self.output_mgr:
+                self.output_mgr.log_debug(error_msg)
+            
+            # Return a single window with the entire text as fallback
+            if self.output_mgr:
+                self.output_mgr.log_debug("DEBUG: Falling back to single window with entire text")
+            
+            try:
+                tokens = self.encoder.encode(text)
+                return [(text, 0, len(tokens))]
+            except:
+                # Last resort fallback
+                if self.output_mgr:
+                    self.output_mgr.log_debug("DEBUG: Complete fallback, returning empty window list")
+                return []
+    
+    def _extract_atomic_facts_first_pass(self, window_text, window_num):
+        """
+        Extract atomic facts from the window text using the first pass prompt.
+        
+        Args:
+            window_text (str): The text of the window to extract facts from
+            window_num (int): The window number for logging purposes
+            
+        Returns:
+            list: A list of extracted facts
+        """
+        self.logger.debug(f"Starting first pass fact extraction for window {window_num}")
+        
+        # Get the first pass prompt from config
+        prompt_template = None
+        
+        # Try different ways to access the prompt
+        if hasattr(self.config, 'first_pass_prompt') and self.config.first_pass_prompt:
+            prompt_template = self.config.first_pass_prompt
+            self.logger.debug("Using first_pass_prompt from config")
+        elif hasattr(self.config.prompts, 'FIRST_PASS_PROMPT') and self.config.prompts.FIRST_PASS_PROMPT:
+            prompt_template = self.config.prompts.FIRST_PASS_PROMPT
+            self.logger.debug("Using FIRST_PASS_PROMPT from config.prompts")
+        elif 'FIRST_PASS_PROMPT' in globals():
+            prompt_template = globals()['FIRST_PASS_PROMPT']
+            self.logger.debug("Using FIRST_PASS_PROMPT from globals")
+        
+        if not prompt_template:
+            self.logger.warning("First pass prompt template is empty. No facts will be extracted.")
+            return []
+            
+        # Format the prompt with the window text
+        try:
+            # Clean up the template to ensure proper formatting
+            if '{text}' in prompt_template:
+                prompt = prompt_template.replace('{text}', window_text)
+            elif '{window_text}' in prompt_template:
+                prompt = prompt_template.replace('{window_text}', window_text)
+            else:
+                # If no placeholder is found, append the text to the prompt
+                prompt = f"{prompt_template}\n\nText: {window_text}"
+                
+            self.logger.debug(f"First pass prompt (first 200 chars): {prompt[:200]}...")
+        except Exception as e:
+            self.logger.error(f"Error formatting prompt: {str(e)}")
+            # Fallback to a simple prompt
+            prompt = f"""
+            Extract atomic facts from the following text. Return a JSON array of fact objects.
+            
+            Text:
+            {window_text}
+            
+            Return ONLY a JSON array of facts with these fields: text, confidence, source, temporal_info, entities.
+            """
+            self.logger.debug("Using fallback prompt due to formatting error")
+        
+        # Call the LLM with the prompt
+        response = self._call_llm(prompt)
+        
+        # Process the response
+        facts = []
+        if not response:
+            self.logger.warning(f"Empty response from LLM for window {window_num}")
+            return facts
+            
+        # Try to parse the response as JSON
+        if isinstance(response, dict) and 'facts' in response:
+            # If the response is already a dictionary with a 'facts' key
+            facts = response['facts']
+            self.logger.debug(f"Extracted {len(facts)} facts from JSON response")
+        elif isinstance(response, list):
+            # If the response is already a list
+            facts = response
+            self.logger.debug(f"Extracted {len(facts)} facts from list response")
+        else:
+            # Try to parse the response as a string
+            try:
+                # Check if the response is a JSON string
+                import json
+                parsed = json.loads(response)
+                if isinstance(parsed, dict) and 'facts' in parsed:
+                    facts = parsed['facts']
+                elif isinstance(parsed, list):
+                    facts = parsed
+                else:
+                    facts = [parsed]  # Single fact as a dictionary
+                self.logger.debug(f"Extracted {len(facts)} facts from parsed JSON")
+            except (json.JSONDecodeError, TypeError):
+                # If not JSON, split by newlines and filter out empty lines
+                lines = response.strip().split('\n')
+                facts = [line.strip() for line in lines if line.strip()]
+                self.logger.debug(f"Extracted {len(facts)} facts from text response")
+        
+        # Validate the facts
+        valid_facts = []
+        for fact in facts:
+            if isinstance(fact, str) and fact.strip():
+                valid_facts.append(fact.strip())
+            elif isinstance(fact, dict) and fact.get('text', '').strip():
+                valid_facts.append(fact)
+                
+        self.logger.debug(f"Validated {len(valid_facts)} facts from first pass")
+        return valid_facts
+
+    def _extract_atomic_facts_second_pass(self, window_text, first_pass_facts, window_num):
+        """
+        Refine the facts extracted in the first pass using the second pass prompt.
+        
+        Args:
+            window_text (str): The text of the window to extract facts from
+            first_pass_facts (list): The facts extracted in the first pass
+            window_num (int): The window number for logging purposes
+            
+        Returns:
+            list: A list of refined facts
+        """
+        self.logger.debug(f"Starting second pass fact extraction for window {window_num}")
+        
+        # If no facts were extracted in the first pass, return an empty list
+        if not first_pass_facts:
+            self.logger.warning(f"No facts to refine in second pass for window {window_num}")
+            return []
+            
+        # Convert facts to a string if they are dictionaries
+        facts_text = ""
+        if isinstance(first_pass_facts[0], dict):
+            facts_text = "\n".join([f"{i+1}. {fact.get('text', '')}" for i, fact in enumerate(first_pass_facts)])
+        else:
+            facts_text = "\n".join([f"{i+1}. {fact}" for i, fact in enumerate(first_pass_facts)])
+            
+        # Get the second pass prompt from config
+        prompt_template = None
+        
+        # Try different ways to access the prompt
+        if hasattr(self.config, 'second_pass_prompt') and self.config.second_pass_prompt:
+            prompt_template = self.config.second_pass_prompt
+            self.logger.debug("Using second_pass_prompt from config")
+        elif hasattr(self.config.prompts, 'SECOND_PASS_PROMPT') and self.config.prompts.SECOND_PASS_PROMPT:
+            prompt_template = self.config.prompts.SECOND_PASS_PROMPT
+            self.logger.debug("Using SECOND_PASS_PROMPT from config.prompts")
+        elif 'SECOND_PASS_PROMPT' in globals():
+            prompt_template = globals()['SECOND_PASS_PROMPT']
+            self.logger.debug("Using SECOND_PASS_PROMPT from globals")
+        
+        if not prompt_template:
+            self.logger.warning("Second pass prompt template is empty. Using first pass facts as is.")
+            return first_pass_facts
+            
+        # Format the prompt with the window text and facts
+        try:
+            # Clean up the template to ensure proper formatting
+            if '{text}' in prompt_template and '{facts}' in prompt_template:
+                prompt = prompt_template.replace('{text}', window_text).replace('{facts}', facts_text)
+            elif '{window_text}' in prompt_template and '{facts_text}' in prompt_template:
+                prompt = prompt_template.replace('{window_text}', window_text).replace('{facts_text}', facts_text)
+            else:
+                # If no placeholder is found, append the text and facts to the prompt
+                prompt = f"{prompt_template}\n\nText: {window_text}\n\nFacts:\n{facts_text}"
+                
+            self.logger.debug(f"Second pass prompt (first 200 chars): {prompt[:200]}...")
+        except Exception as e:
+            self.logger.error(f"Error formatting prompt: {str(e)}")
+            # Fallback to a simple prompt
+            prompt = f"""
+            Review and improve these extracted facts to ensure they are atomic and self-contained.
+            
+            Original text:
+            {window_text}
+            
+            Facts to review:
+            {facts_text}
+            
+            Return ONLY a JSON array of facts with these fields: text, confidence, source, temporal_info, entities.
+            """
+            self.logger.debug("Using fallback prompt due to formatting error")
+        
+        # Call the LLM with the prompt
+        response = self._call_llm(prompt)
+        
+        # Process the response
+        refined_facts = []
+        if not response:
+            self.logger.warning(f"Empty response from LLM for second pass in window {window_num}")
+            return first_pass_facts  # Return original facts if no response
+            
+        # Try to parse the response as JSON
+        if isinstance(response, dict) and 'facts' in response:
+            # If the response is already a dictionary with a 'facts' key
+            refined_facts = response['facts']
+            self.logger.debug(f"Extracted {len(refined_facts)} facts from JSON response")
+        elif isinstance(response, list):
+            # If the response is already a list
+            refined_facts = response
+            self.logger.debug(f"Extracted {len(refined_facts)} facts from list response")
+        else:
+            # Try to parse the response as a string
+            try:
+                # Check if the response is a JSON string
+                import json
+                parsed = json.loads(response)
+                if isinstance(parsed, dict) and 'facts' in parsed:
+                    refined_facts = parsed['facts']
+                elif isinstance(parsed, list):
+                    refined_facts = parsed
+                else:
+                    refined_facts = [parsed]  # Single fact as a dictionary
+                self.logger.debug(f"Extracted {len(refined_facts)} facts from parsed JSON")
+            except (json.JSONDecodeError, TypeError):
+                # If not JSON, split by newlines and filter out empty lines
+                lines = response.strip().split('\n')
+                refined_facts = [line.strip() for line in lines if line.strip()]
+                self.logger.debug(f"Extracted {len(refined_facts)} facts from text response")
+        
+        # Validate the facts
+        valid_facts = []
+        for fact in refined_facts:
+            if isinstance(fact, str) and fact.strip():
+                # Convert string facts to dict format
+                valid_facts.append({
+                    'text': fact.strip(),
+                    'confidence': 1.0,
+                    'source': 'extraction',
+                    'temporal_info': '',
+                    'entities': []
+                })
+            elif isinstance(fact, dict) and fact.get('text', '').strip():
+                valid_facts.append(fact)
+                
+        self.logger.debug(f"Validated {len(valid_facts)} facts from second pass")
+        return valid_facts
+
+    def _deduplicate_facts(self, all_facts: List[str]) -> List[str]:
+        """Deduplicate and merge similar facts"""
+        if not all_facts:
+            return []
+        
+        # First, normalize facts for comparison
+        normalized_facts = [fact.lower().strip() for fact in all_facts]
+        
+        # Use a set to track which facts we've already processed
+        processed_indices = set()
+        deduplicated_facts = []
+        
+        for i, fact in enumerate(all_facts):
+            if i in processed_indices:
+                continue
+                
+            processed_indices.add(i)
+            deduplicated_facts.append(fact)
+            
+            # Check for similar facts
+            for j, other_fact in enumerate(all_facts):
+                if i != j and j not in processed_indices:
+                    # Simple similarity check - could be improved
+                    if normalized_facts[i] in normalized_facts[j] or normalized_facts[j] in normalized_facts[i]:
+                        processed_indices.add(j)
+                        # We could merge facts here if needed
+        
+        return deduplicated_facts
+    
+    def _global_check(self, facts):
+        """
+        Perform a global check to ensure continuity and resolve contradictions.
+        
+        Args:
+            facts (list): List of facts to check
+            
+        Returns:
+            list: List of facts after global check
+        """
+        # Check if global check is enabled
+        if not getattr(self.config, 'global_check_enabled', True):
+            self.logger.debug("Global check is disabled")
+            return facts
+            
+        # Check if there are enough facts to analyze
+        if len(facts) < 2:
+            self.logger.debug("Not enough facts for global check")
+            return facts
+            
+        self.logger.debug(f"Performing global check on {len(facts)} facts")
+        
+        # Create a string with all facts
+        facts_text = "\n".join([f"{i+1}. {fact.get('text', '') if isinstance(fact, dict) else fact}" for i, fact in enumerate(facts)])
+        
+        # Get the global check prompt from config
+        prompt_template = None
+        
+        # Try different ways to access the prompt
+        if hasattr(self.config, 'global_check_prompt') and self.config.global_check_prompt:
+            prompt_template = self.config.global_check_prompt
+            self.logger.debug("Using global_check_prompt from config")
+        elif hasattr(self.config.prompts, 'GLOBAL_CHECK_PROMPT') and self.config.prompts.GLOBAL_CHECK_PROMPT:
+            prompt_template = self.config.prompts.GLOBAL_CHECK_PROMPT
+            self.logger.debug("Using GLOBAL_CHECK_PROMPT from config.prompts")
+        elif 'GLOBAL_CHECK_PROMPT' in globals():
+            prompt_template = globals()['GLOBAL_CHECK_PROMPT']
+            self.logger.debug("Using GLOBAL_CHECK_PROMPT from globals")
+            
+        if not prompt_template:
+            self.logger.warning("Global check prompt template is empty. No global check will be performed.")
+            return facts
+            
+        # Format the prompt
+        try:
+            if '{facts_text}' in prompt_template:
+                prompt = prompt_template.replace('{facts_text}', facts_text)
+            else:
+                prompt = f"{prompt_template}\n\nFacts:\n{facts_text}"
+                
+            self.logger.debug(f"Global check prompt (first 200 chars): {prompt[:200]}...")
+        except Exception as e:
+            self.logger.error(f"Error formatting global check prompt: {str(e)}")
+            return facts
+            
+        # Call the LLM with the prompt
+        response = self._call_llm(prompt)
+        
+        # Process the response
+        if not response:
+            self.logger.warning("Empty response from LLM for global check")
+            return facts
+            
+        # Try to parse the response as JSON
+        try:
+            if isinstance(response, dict) and 'changes' in response:
+                # If the response is already a dictionary with a 'changes' key
+                changes = response['changes']
+                self.logger.debug(f"Found {len(changes)} changes in global check response")
+            elif isinstance(response, str):
+                # Try to parse the response as a JSON string
+                import json
+                parsed = json.loads(response)
+                if isinstance(parsed, dict) and 'changes' in parsed:
+                    changes = parsed['changes']
+                else:
+                    changes = parsed  # Assume the whole response is the changes object
+                self.logger.debug(f"Parsed {len(changes)} changes from global check response")
+            else:
+                self.logger.warning("Unknown response format from global check")
+                return facts
+                
+            # Apply the changes to the facts
+            updated_facts = facts.copy()
+            
+            # Process redundancies
+            if 'redundancies' in changes:
+                redundancies = changes['redundancies']
+                self.logger.debug(f"Processing {len(redundancies)} redundancies")
+                # Mark redundant facts for removal
+                for redundancy in redundancies:
+                    fact_idx = redundancy.get('fact_idx')
+                    if fact_idx is not None and 0 <= fact_idx < len(updated_facts):
+                        updated_facts[fact_idx] = None  # Mark for removal
+                        
+            # Process contradictions
+            if 'contradictions' in changes:
+                contradictions = changes['contradictions']
+                self.logger.debug(f"Processing {len(contradictions)} contradictions")
+                # Update contradicting facts
+                for contradiction in contradictions:
+                    fact_idx = contradiction.get('fact_idx')
+                    correction = contradiction.get('correction')
+                    if fact_idx is not None and correction and 0 <= fact_idx < len(updated_facts):
+                        if isinstance(updated_facts[fact_idx], dict):
+                            updated_facts[fact_idx]['text'] = correction
+                        else:
+                            updated_facts[fact_idx] = correction
+                            
+            # Process timeline issues
+            if 'timeline_issues' in changes:
+                timeline_issues = changes['timeline_issues']
+                self.logger.debug(f"Processing {len(timeline_issues)} timeline issues")
+                # Update facts with timeline issues
+                for issue in timeline_issues:
+                    fact_idx = issue.get('fact_idx')
+                    correction = issue.get('correction')
+                    if fact_idx is not None and correction and 0 <= fact_idx < len(updated_facts):
+                        if isinstance(updated_facts[fact_idx], dict):
+                            updated_facts[fact_idx]['text'] = correction
+                        else:
+                            updated_facts[fact_idx] = correction
+                            
+            # Remove None values (marked for removal)
+            updated_facts = [fact for fact in updated_facts if fact is not None]
+            
+            self.logger.debug(f"Global check complete, {len(facts) - len(updated_facts)} facts removed")
+            return updated_facts
+            
+        except Exception as e:
+            self.logger.error(f"Error processing global check response: {str(e)}")
+            return facts
+    
+    def _tag_fact(self, fact: Dict, fact_num: int = None) -> Dict:
+        """
+        Add tags, topics, and entity information to a fact
+        
+        Args:
+            fact: The atomic fact dictionary
+            fact_num: The fact number for logging (optional)
+            
+        Returns:
+            Updated fact dictionary with tags, topic, and entities
+        """
+        # Use fact_id as fact_num if not provided
+        if fact_num is None and "id" in fact:
+            fact_num = fact["id"].replace("fact_", "")
+        elif fact_num is None:
+            fact_num = 0
+            
+        # Debug: Log tagging start
+        debug_msg = f"DEBUG: Starting tagging for fact {fact_num}"
+        self.logger.info(debug_msg)
+        if hasattr(self, 'output_mgr') and self.output_mgr:
+            self.output_mgr.log_debug(debug_msg)
+        
+        # Get the fact text
+        fact_text = fact.get("text", "")
+        if not fact_text and isinstance(fact, str):
+            fact_text = fact
+            
+        if not fact_text:
+            self.logger.warning(f"No text found in fact {fact_num}")
+            fact["tags"] = []
+            fact["topic"] = "unknown"
+            fact["entities"] = {"people": [], "places": [], "organizations": [], "other": []}
+            return fact
+        
+        # Get the tagging prompt from config
+        if hasattr(self.config, 'tagging_prompt'):
+            # Direct attribute access
+            prompt_template = self.config.tagging_prompt
+        elif hasattr(self.config, 'prompts') and hasattr(self.config.prompts, 'TAGGING_PROMPT'):
+            # Access via prompts namespace
+            prompt_template = self.config.prompts.TAGGING_PROMPT
+        elif 'TAGGING_PROMPT' in globals():
+            # Global variable
+            prompt_template = TAGGING_PROMPT
+        else:
+            # Fallback to imported prompt
+            from config.chunking.prompts import TAGGING_PROMPT
+            prompt_template = TAGGING_PROMPT
+        
+        # Format the prompt with the correct variable name
+        if '{fact_text}' in prompt_template:
+            tagging_prompt = prompt_template.format(fact_text=fact_text)
+        else:
+            # Default fallback
+            tagging_prompt = f"""
+            Analyze this fact and provide detailed categorization:
+            
+            Fact: {fact_text}
+            
+            1. Tags: List relevant keywords that describe key aspects (e.g., "military", "education", "health", "family")
+            2. Topic: The main theme or category this fact belongs to
+            3. Entities: Identify and categorize all named entities
+            
+            Respond in JSON format:
+            {{
+                "tags": ["tag1", "tag2"],
+                "topic": "main_topic",
+                "entities": {{
+                    "people": ["person1", "person2"],
+                    "places": ["place1", "place2"],
+                    "organizations": ["org1", "org2"],
+                    "other": ["entity1", "entity2"]
+                }}
+            }}
+            """
+        
+        # Log the prompt for debugging
+        self.logger.debug(f"Tagging prompt for fact {fact_num}: {tagging_prompt[:200]}...")
+        
+        # Call LLM with expected JSON format
+        response = self._call_llm(tagging_prompt, window_num=fact_num, pass_num=4, expected_format="json")
+        
+        try:
+            # Check if we're dealing with a response dictionary with parsed JSON
+            if isinstance(response, dict) and 'parsed' in response:
+                result = response['parsed']
+            elif isinstance(response, dict) and isinstance(response.get('response'), str):
+                # Try to parse the response text as JSON
+                try:
+                    result = json.loads(response['response'])
+                except json.JSONDecodeError:
+                    self.logger.warning(f"Failed to parse tagging response as JSON for fact {fact_num}")
+                    # Create a default result
+                    result = {
+                        "tags": [],
+                        "topic": "unknown",
+                        "entities": {"people": [], "places": [], "organizations": [], "other": []}
+                    }
+            else:
+                # Unknown response format
+                self.logger.warning(f"Unknown tagging response format for fact {fact_num}: {type(response)}")
+                result = {
+                    "tags": [],
+                    "topic": "unknown",
+                    "entities": {"people": [], "places": [], "organizations": [], "other": []}
+                }
+            
+            # Update the fact with tagging information
+            fact["tags"] = result.get("tags", [])
+            fact["topic"] = result.get("topic", "unknown")
+            
+            # Handle entities field
+            if "entities" in result:
+                if isinstance(result["entities"], list):
+                    # Convert list to dictionary
+                    fact["entities"] = {
+                        "people": [],
+                        "places": [],
+                        "organizations": [],
+                        "other": result["entities"]
+                    }
+                else:
+                    fact["entities"] = result["entities"]
+            else:
+                fact["entities"] = {"people": [], "places": [], "organizations": [], "other": []}
+            
+            # Add temporal context if available
+            if "temporal_context" in result:
+                fact["temporal_context"] = result["temporal_context"]
+            
+            # Add relationships if available
+            if "relationships" in result:
+                fact["relationships"] = result["relationships"]
+            
+            # Debug: Log tagging completion
+            debug_msg = f"DEBUG: Completed tagging for fact {fact_num}: {len(fact['tags'])} tags identified"
+            self.logger.info(debug_msg)
+            if hasattr(self, 'output_mgr') and self.output_mgr:
+                self.output_mgr.log_debug(debug_msg)
+            
+            return fact
+        except Exception as e:
+            error_msg = f"Error processing tagging response: {str(e)}"
+            self.logger.error(error_msg)
+            if hasattr(self, 'output_mgr') and self.output_mgr:
+                self.output_mgr.log_debug(f"DEBUG ERROR: {error_msg}")
+            
+            # Return fact with empty tags as fallback
+            fact["tags"] = []
+            fact["topic"] = "unknown"
+            fact["entities"] = {"people": [], "places": [], "organizations": [], "other": []}
+            return fact
+
+    def _analyze_relationships(self, facts):
+        """
+        Analyze relationships between facts.
+        
+        Args:
+            facts (list): List of facts to analyze
+            
+        Returns:
+            dict: Dictionary of relationships between facts
+        """
+        # Check if relationships are enabled
+        if not getattr(self.config, 'relationships_enabled', True):
+            self.logger.debug("Relationship analysis is disabled")
+            return {}
+            
+        # Check if there are enough facts to analyze
+        if len(facts) < 2:
+            self.logger.debug("Not enough facts to analyze relationships")
+            return {}
+            
+        self.logger.debug(f"Analyzing relationships between {len(facts)} facts")
+        
+        # Get the relationship prompt from config
+        prompt_template = None
+        
+        # Try different ways to access the prompt
+        if hasattr(self.config, 'relationship_prompt') and self.config.relationship_prompt:
+            prompt_template = self.config.relationship_prompt
+            self.logger.debug("Using relationship_prompt from config")
+        elif hasattr(self.config.prompts, 'RELATIONSHIP_PROMPT') and self.config.prompts.RELATIONSHIP_PROMPT:
+            prompt_template = self.config.prompts.RELATIONSHIP_PROMPT
+            self.logger.debug("Using RELATIONSHIP_PROMPT from config.prompts")
+        elif 'RELATIONSHIP_PROMPT' in globals():
+            prompt_template = globals()['RELATIONSHIP_PROMPT']
+            self.logger.debug("Using RELATIONSHIP_PROMPT from globals")
+            
+        if not prompt_template:
+            self.logger.warning("Relationship prompt template is empty. No relationships will be analyzed.")
+            return {}
+            
+        # Check if the prompt is for pairwise analysis or global analysis
+        if '{fact1}' in prompt_template and '{fact2}' in prompt_template:
+            # Pairwise analysis
+            self.logger.debug("Using pairwise relationship analysis")
+            return self._analyze_pairwise_relationships(facts)
+        else:
+            # Global analysis
+            self.logger.debug("Using global relationship analysis")
+            
+            # Create a numbered list of facts for the prompt
+            facts_text = ""
+            for i, fact in enumerate(facts):
+                if isinstance(fact, dict):
+                    facts_text += f"{i+1}. {fact.get('text', '')}\n"
+                else:
+                    facts_text += f"{i+1}. {fact}\n"
+                    
+            # Format the prompt
+            try:
+                if '{facts_text}' in prompt_template:
+                    prompt = prompt_template.replace('{facts_text}', facts_text)
+                else:
+                    prompt = f"{prompt_template}\n\nFacts:\n{facts_text}"
+                    
+                self.logger.debug(f"Relationship prompt (first 200 chars): {prompt[:200]}...")
+            except Exception as e:
+                self.logger.error(f"Error formatting relationship prompt: {str(e)}")
+                return {}
+                
+            # Call the LLM with the prompt
+            response = self._call_llm(prompt)
+            
+            # Process the response
+            relationships = {}
+            if not response:
+                self.logger.warning("Empty response from LLM for relationship analysis")
+                return relationships
+                
+            # Try to parse the response as JSON
+            try:
+                if isinstance(response, dict) and 'relationships' in response:
+                    # If the response is already a dictionary with a 'relationships' key
+                    relationships = response['relationships']
+                elif isinstance(response, str):
+                    # Try to parse the response as a JSON string
+                    import json
+                    parsed = json.loads(response)
+                    if isinstance(parsed, dict) and 'relationships' in parsed:
+                        relationships = parsed['relationships']
+                    else:
+                        relationships = parsed  # Assume the whole response is the relationships object
+            except Exception as e:
+                self.logger.error(f"Error parsing relationship response: {str(e)}")
+                
+            self.logger.debug(f"Analyzed {len(relationships)} relationships")
+            return relationships
+            
+    def _analyze_pairwise_relationships(self, facts):
+        """
+        Analyze relationships between facts in a pairwise manner.
+        
+        Args:
+            facts (list): List of facts to analyze
+            
+        Returns:
+            dict: Dictionary of relationships between facts
+        """
+        if len(facts) < 2:
+            self.logger.debug("Not enough facts to analyze relationships")
+            return {}
+            
+        # Get the relationship prompt template
+        prompt_template = self.config.relationship_prompt
+        
+        # Initialize relationships dictionary
+        relationships = {}
+        
+        # Limit the number of pairs to analyze to avoid excessive API calls
+        max_pairs = min(100, len(facts) * (len(facts) - 1) // 2
+        
+        # Create pairs of facts to analyze
+        pairs = []
+        chunk_ids = list(range(len(facts)))
+        
+        # Focus on nearby facts first
+        for i in range(len(facts)):
+            # Get indices of nearby chunks
+            start = max(0, i - 3)
+            end = min(len(facts), i + 4)
+            nearby_indices = list(range(start, end))
+            
+            # Add a few random chunks for broader relationships
+            import random
+            random_indices = random.sample(range(len(chunk_ids)), min(3, len(chunk_ids)))
+            comparison_indices = list(set(nearby_indices + random_indices) - {i})
+            
+            # Prepare chunks for comparison
+            for j in comparison_indices:
+                if i < j:  # Avoid duplicates
+                    pairs.append((i, j))
+        
+        # Shuffle and limit pairs
+        random.shuffle(pairs)
+        pairs = pairs[:max_pairs]
+        
+        # Analyze each pair
+        for i, j in pairs:
+            fact1 = facts[i]
+            fact2 = facts[j]
+            
+            # Format the prompt
+            try:
+                if isinstance(fact1, dict):
+                    fact1_text = fact1.get('text', '')
+                else:
+                    fact1_text = str(fact1)
+                    
+                if isinstance(fact2, dict):
+                    fact2_text = fact2.get('text', '')
+                else:
+                    fact2_text = str(fact2)
+                    
+                prompt = prompt_template.replace('{fact1}', fact1_text).replace('{fact2}', fact2_text)
+                
+                self.logger.debug(f"Relationship prompt for facts {i} and {j} (first 100 chars): {prompt[:100]}...")
+            except Exception as e:
+                self.logger.error(f"Error formatting relationship prompt for facts {i} and {j}: {str(e)}")
+                continue
+                
+            # Call the LLM with the prompt
+            response = self._call_llm(prompt)
+            
+            # Process the response
+            try:
+                # Check if there's a relationship
+                if isinstance(response, dict) and 'relationship_type' in response:
+                    relationship_type = response['relationship_type']
+                    confidence = response.get('confidence', 0.5)
+                    
+                    # Add the relationship if confidence is high enough
+                    if confidence > 0.3:
+                        # Add relationship from fact1 to fact2
+                        if i not in relationships:
+                            relationships[i] = {}
+                        relationships[i][j] = {
+                            'type': relationship_type,
+                            'confidence': confidence
+                        }
+                        
+                        # Add reverse relationship from fact2 to fact1
+                        if relationship_type in ['contradicts', 'supports', 'related']:
+                            if j not in relationships:
+                                relationships[j] = {}
+                            relationships[j][i] = {
+                                'type': relationship_type,
+                                'confidence': confidence
+                            }
+            except Exception as e:
+                self.logger.error(f"Error analyzing relationship between facts {i} and {j}: {str(e)}")
+                
+        self.logger.debug(f"Analyzed {len(relationships)} pairwise relationships")
+        return relationships
+
+    def _track_transcript_positions(self, facts: List[str], windows: List[Tuple[str, int, int]]) -> List[Dict]:
+        """
+        Track which parts of the transcript each fact came from
+        
+        Args:
+            facts: List of atomic facts
+            windows: List of window tuples (text, start_token, end_token)
+            
+        Returns:
+            List of dictionaries with transcript position information for each fact
+        """
+        # Debug: Log transcript position tracking start
+        debug_msg = f"DEBUG: Starting transcript position tracking for {len(facts)} facts"
+        self.logger.info(debug_msg)
+        if self.output_mgr:
+            self.output_mgr.log_debug(debug_msg)
+        
+        if not self.config.track_transcript_positions:
+            return [{"windows": []} for _ in facts]
+        
+        # For each fact, find which windows it likely came from
+        fact_positions = []
+        
+        for fact_idx, fact in enumerate(facts):
+            fact_windows = []
+            fact_lower = fact.lower()
+            
+            # Tokenize the fact for comparison
+            fact_tokens = set(self.encoder.encode(fact_lower))
+            
+            for window_idx, (window_text, start_token, end_token) in enumerate(windows, 1):
+                window_lower = window_text.lower()
+                window_tokens = set(self.encoder.encode(window_lower))
+                
+                # Calculate token overlap
+                token_overlap = len(fact_tokens.intersection(window_tokens))
+                token_overlap_ratio = token_overlap / len(fact_tokens)
+                
+                # Check for significant overlap (more than 30% of fact tokens found in window)
+                if token_overlap_ratio > 0.3:
+                    # Find the specific text spans that match
+                    text_spans = []
+                    words = [w for w in fact_lower.split() if len(w) > 4]  # Only check significant words
+                    
+                    for word in words:
+                        for match in re.finditer(re.escape(word), window_lower):
+                            text_spans.append({
+                                "start": match.start(),
+                                "end": match.end(),
+                                "text": window_text[match.start():match.end()]
+                            })
+                    
+                    if text_spans:
+                        fact_windows.append({
+                            "window_num": window_idx,
+                            "token_range": [start_token, end_token],
+                            "overlap_ratio": round(token_overlap_ratio, 2),
+                            "text_spans": text_spans,
+                            "window_excerpt": window_text[
+                                max(0, min(s["start"] for s in text_spans) - 50):
+                                min(len(window_text), max(s["end"] for s in text_spans) + 50)
+                            ]
+                        })
+            
+            fact_positions.append({
+                "fact_index": fact_idx + 1,
+                "windows": sorted(fact_windows, key=lambda w: w["overlap_ratio"], reverse=True)
+            })
+            
+            # Debug: Log progress periodically
+            if (fact_idx + 1) % 10 == 0 or fact_idx == len(facts) - 1:
+                debug_msg = f"DEBUG: Processed transcript positions for {fact_idx + 1}/{len(facts)} facts"
+                self.logger.info(debug_msg)
+                if self.output_mgr:
+                    self.output_mgr.log_debug(debug_msg)
+        
+        return fact_positions
+
+    def _estimate_completion_time(self, current_step: int, total_steps: int, elapsed_time: float) -> str:
+        """
+        Estimate time to completion based on current progress
+        
+        Args:
+            current_step: Current step number
+            total_steps: Total number of steps
+            elapsed_time: Time elapsed so far in seconds
+            
+        Returns:
+            String with estimated time to completion
+        """
+        if current_step == 0:
+            return "Unknown"
+        
+        # Calculate estimated time to completion
+        time_per_step = elapsed_time / current_step
+        remaining_steps = total_steps - current_step
+        estimated_remaining_time = time_per_step * remaining_steps
+        
+        # Format as human-readable time
+        eta = timedelta(seconds=int(estimated_remaining_time))
+        
+        return str(eta)
+    
+    def process(self, text: str, source_file: str = None) -> List[Dict]:
+        """
+        Process the text and extract atomic facts.
+        
+        Args:
+            text: The text to process
+            source_file: Path to the source file (optional)
+            
+        Returns:
+            List of enhanced chunks with atomic facts
+        """
+        # Store the source file path
+        self.source_file = source_file or "unknown_source"
+        
+        # Initialize output manager if not already done
+        if not hasattr(self, 'output_mgr') or self.output_mgr is None:
+            self.output_mgr = OutputManager(self.source_file, self.config.model)
+        
+        self.logger.debug(f"Starting processing of text with length {len(text)}")
+        
+        # Initialize relationships
+        fact_relationships = {}
+        chunk_relationships = {}
+        
+        # Log phases with clear visual separators
+        self.logger.debug("\n" + "="*50)
+        self.logger.debug("PHASE 1: INITIALIZATION")
+        self.logger.debug("="*50 + "\n")
+        
+        # Log configuration
+        metadata = self._get_metadata()
+        self.logger.debug(f"DEBUG: Initialized OutputManager for {self.source_file}")
+        self.logger.debug(f"DEBUG: Log files at {self.output_mgr.llm_interactions_log} and {self.output_mgr.llm_metrics_log}")
+        self.logger.debug(f"DEBUG: Metadata: {metadata}")
+        
+        # Phase 1: Split text into windows
+        self.logger.debug("\n" + "="*50)
+        self.logger.debug("PHASE 2: WINDOW CREATION")
+        self.logger.debug("="*50 + "\n")
+        
+        self.logger.debug(f"DEBUG: Creating sliding windows with size={getattr(self.config, 'window_size', 1000)}, overlap={getattr(self.config, 'overlap_size', 100)}")
+        windows = self._split_text_into_windows(text)
+        self.logger.debug(f"DEBUG: Created {len(windows)} windows")
+        
+        # Phase 2: Extract atomic facts from each window
+        self.logger.debug("\n" + "="*50)
+        self.logger.debug("PHASE 3: FACT EXTRACTION")
+        self.logger.debug("="*50 + "\n")
+        
+        start_time = time.time()
+        all_facts = []
+        window_facts_map = {}
+        
+        for i, (window_text, start_token, end_token) in enumerate(windows, 1):
+            window_num = i
+            self.logger.debug(f"Processing window {window_num}/{len(windows)}")
+            window_start_time = time.time()
+            
+            # Extract facts from this window
+            facts = self._extract_facts_from_window(window_text, window_num)
+            
+            # Ensure each fact is a dictionary
+            processed_facts = []
+            for fact in facts:
+                if isinstance(fact, str):
+                    processed_facts.append({
+                        "text": fact,
+                        "confidence": 1.0,
+                        "source": "extraction",
+                        "temporal_info": {},
+                        "entities": []
+                    })
+                else:
+                    processed_facts.append(fact)
+            
+            # Track transcript positions for each fact
+            fact_positions = self._track_transcript_positions(
+                [f["text"] for f in processed_facts],
+                [(window_text, start_token, end_token)]
+            )
+            
+            # Update facts with position information
+            for fact, positions in zip(processed_facts, fact_positions):
+                fact["transcript_positions"] = positions
+            
+            # Store facts and their mapping to windows
+            all_facts.extend(processed_facts)
+            window_facts_map[window_num] = processed_facts
+            
+            # Log metrics for this window
+            window_elapsed = time.time() - window_start_time
+            total_elapsed = time.time() - start_time
+            facts_per_second = len(all_facts) / total_elapsed if total_elapsed > 0 else 0
+            estimated_total_time = (len(windows) / (i)) * total_elapsed if i > 0 else 0
+            estimated_completion = time.strftime('%H:%M:%S', time.localtime(start_time + estimated_total_time))
+            
+            self.logger.debug(f"Window {window_num}: Extracted {len(processed_facts)} facts in {window_elapsed:.2f}s")
+            self.logger.debug(f"Progress: {i}/{len(windows)} windows, {len(all_facts)} total facts")
+            self.logger.debug(f"Rate: {facts_per_second:.2f} facts/s, Est. completion: {estimated_completion}")
+            
+            # Save metrics
+            metrics = {
+                "window_num": window_num,
+                "total_windows": len(windows),
+                "facts_extracted": len(processed_facts),
+                "total_facts": len(all_facts),
+                "window_time": window_elapsed,
+                "elapsed_time": total_elapsed,
+                "facts_per_second": facts_per_second,
+                "estimated_completion": estimated_completion
+            }
+            self.output_mgr.log_llm_metrics(window_num, metrics)
+        
+        self.logger.debug(f"Extracted {len(all_facts)} atomic facts from {len(windows)} windows")
+        
+        # Phase 3: Global check for continuity and resolve contradictions
+        self.logger.debug("Phase 3: Performing global check for continuity")
+        global_check_enabled = getattr(self.config, 'global_check_enabled', False)
+        if global_check_enabled and len(all_facts) > 0:
+            all_facts = self._global_check(all_facts)
+            self.logger.debug(f"After global check: {len(all_facts)} facts")
+        
+        # Phase 4: Assign unique IDs to facts
+        self.logger.debug("Phase 4: Assigning unique IDs to facts")
+        for i, fact in enumerate(all_facts):
+            fact["id"] = f"fact_{i+1}"
+        
+        # Phase 5: Tag facts with topics and entities
+        self.logger.debug("Phase 5: Tagging facts with topics and entities")
+        tagging_enabled = getattr(self.config, 'tagging_enabled', False)
+        if tagging_enabled and len(all_facts) > 0:
+            for i, fact in enumerate(all_facts):
+                self._tag_fact(fact, i+1)
+        
+        # Phase 6: Analyze relationships between facts and chunks
+        self.logger.debug("Phase 6: Analyzing relationships between facts and chunks")
+        relationships_enabled = getattr(self.config, 'relationships_enabled', False)
+        if relationships_enabled and len(all_facts) > 5:
+            # First analyze fact-to-fact relationships
+            fact_relationships = self._analyze_relationships(all_facts)
+            
+            # Then analyze semantic relationships between chunks
+            chunk_relationships = self._analyze_chunk_relationships(windows, window_facts_map)
+            
+            # Store relationships in facts and chunks
+            for fact in all_facts:
+                fact_id = fact.get("id")
+                if fact_id and fact_id in fact_relationships:
+                    fact["related_facts"] = fact_relationships[fact_id]
+        
+        # Phase 7: Create enhanced chunks
+        self.logger.debug("Phase 7: Creating enhanced chunks")
+        enhanced_chunks = []
+        
+        # Process each window and create a chunk
+        for window_num, (window_text, start_token, end_token) in enumerate(windows, 1):
+            # Get facts for this window
+            facts = window_facts_map.get(window_num, [])
+            
+            # Extract topics and tags from facts
+            all_tags = set()
+            all_topics = set()
+            all_entities = set()
+            
+            for fact in facts:
+                all_tags.update(fact.get("tags", []))
+                if "topic" in fact:
+                    all_topics.add(fact.get("topic"))
+                if "entities" in fact:
+                    for entity_type, entities in fact["entities"].items():
+                        all_entities.update(entities)
+            
+            # Remove empty strings and None values
+            all_tags = [tag for tag in all_tags if tag]
+            all_topics = [topic for topic in all_topics if topic]
+            all_entities = [entity for entity in all_entities if entity]
+            
+            # Get semantic relationships for this chunk
+            related_chunks = []
+            if relationships_enabled and chunk_relationships:
+                chunk_id = f"chunk_{window_num}"
+                if chunk_id in chunk_relationships:
+                    related_chunks = chunk_relationships[chunk_id]
+            
+            # Create enhanced chunk
+            chunk = {
+                "chunk_id": f"chunk_{window_num}",
+                "source_file": self.source_file,
+                "text": window_text,
+                "facts": facts,
+                "tags": list(all_tags),
+                "topics": list(all_topics),
+                "entities": list(all_entities),
+                "window_num": window_num,
+                "total_windows": len(windows),
+                "token_range": [start_token, end_token],
+                "related_chunks": related_chunks,
+                "processing_time": time.time() - start_time
+            }
+            
+            enhanced_chunks.append(chunk)
+            
+            # Write chunk to file
+            if self.output_mgr:
+                self.output_mgr.write_chunk_to_file(window_num, chunk)
+        
+        # Write final summary
+        total_time = time.time() - start_time
+        summary_metrics = {
+            "total_chunks": len(enhanced_chunks),
+            "total_facts": len(all_facts),
+            "total_time": f"{total_time:.2f}s",
+            "facts_per_second": len(all_facts) / total_time if total_time > 0 else 0,
+            "facts_per_chunk": len(all_facts) / len(enhanced_chunks) if enhanced_chunks else 0,
+            "metadata": self._get_metadata()
+        }
+        
+        try:
+            self.output_mgr.write_final_summary(summary_metrics)
+            self.logger.debug(f"Wrote final summary with {len(all_facts)} facts across {len(enhanced_chunks)} chunks")
+        except Exception as e:
+            self.logger.error(f"Error writing final summary: {str(e)}")
+        
+        self.logger.debug(f"Processing completed in {total_time:.2f}s")
+        return enhanced_chunks
+
+    def _extract_facts_from_window(self, window_text: str, window_num: int) -> List[Dict]:
+        """
+        Extract atomic facts from a window of text.
+        
+        Args:
+            window_text: The text window to extract facts from
+            window_num: The window number
+            
+        Returns:
+            A list of atomic facts
+        """
+        self.logger.info(f"Extracting facts from window {window_num}")
+        
+        # First pass: Extract initial facts
+        first_pass_facts = self._extract_atomic_facts_first_pass(window_text, window_num)
+        
+        # Check if we got any facts
+        if not first_pass_facts:
+            self.logger.warning(f"No facts extracted in first pass for window {window_num}")
+            # Create a default fact to avoid empty results
+            default_fact = {
+                "text": f"No facts could be extracted from window {window_num}.",
+                "confidence": 0.0,
+                "source": "system",
+                "temporal_info": "",
+                "entities": []
+            }
+            return [default_fact]
+        
+        # Log the number of facts extracted in the first pass
+        self.logger.info(f"Extracted {len(first_pass_facts)} facts in first pass for window {window_num}")
+        
+        # Second pass: Refine the facts
+        second_pass_facts = self._extract_atomic_facts_second_pass(window_text, first_pass_facts, window_num)
+        
+        if not second_pass_facts:
+            self.logger.warning(f"No facts extracted in second pass for window {window_num}, using first pass facts")
+            second_pass_facts = first_pass_facts
+        
+        # Log the number of facts extracted in the second pass
+        self.logger.info(f"Extracted {len(second_pass_facts)} facts in second pass for window {window_num}")
+        
+        # Validate and normalize the facts
+        validated_facts = []
+        for i, fact in enumerate(second_pass_facts):
+            # Skip facts that are just placeholders or headers
+            if isinstance(fact, dict) and fact.get('text', '').lower().startswith(('here are', 'atomic fact', 'fact:')):
+                self.logger.warning(f"Skipping placeholder fact: {fact.get('text', '')[:50]}...")
+                continue
+            
+            # Convert string facts to dictionaries
+            if isinstance(fact, str):
+                fact = {
+                    'text': fact.strip(),
+                    'confidence': 1.0,
+                    'source': 'extraction',
+                    'temporal_info': '',
+                    'entities': []
+                }
+            
+            # Ensure the fact has the required fields
+            if not isinstance(fact, dict):
+                self.logger.warning(f"Fact {i} is not a dictionary: {fact}")
+                continue
+            
+            # Add missing fields with default values
+            for field, default_value in [
+                ('text', ''),
+                ('confidence', 1.0),
+                ('source', 'extraction'),
+                ('temporal_info', ''),
+                ('entities', [])
+            ]:
+                if field not in fact:
+                    fact[field] = default_value
+                    self.logger.warning(f"Added missing field '{field}' to fact {i}")
+            
+            # Validate the fact
+            if self._validate_atomic_fact(fact):
+                validated_facts.append(fact)
+            else:
+                self.logger.warning(f"Fact {i} failed validation: {fact}")
+        
+        # If no facts passed validation, create a default fact
+        if not validated_facts:
+            self.logger.warning(f"No facts passed validation for window {window_num}, creating default fact")
+            default_fact = {
+                "text": f"No valid facts could be extracted from window {window_num}.",
+                "confidence": 0.0,
+                "source": "system",
+                "temporal_info": "",
+                "entities": []
+            }
+            validated_facts = [default_fact]
+        
+        # Log the number of validated facts
+        self.logger.info(f"Validated {len(validated_facts)} facts for window {window_num}")
+        
+        return validated_facts
+
+    def _validate_atomic_fact(self, fact: Dict) -> bool:
+        """
+        Validate that a fact has all required fields and proper types.
+        
+        Args:
+            fact: The fact to validate
+            
+        Returns:
+            True if the fact is valid, False otherwise
+        """
+        # Check if fact is a dictionary
+        if not isinstance(fact, dict):
+            self.logger.warning(f"Fact is not a dictionary: {fact}")
+            return False
+        
+        # Check for required fields
+        required_fields = ['text', 'confidence', 'source', 'temporal_info', 'entities']
+        for field in required_fields:
+            if field not in fact:
+                self.logger.warning(f"Fact missing required field '{field}': {fact}")
+                # Add default values for missing fields
+                if field == 'text':
+                    fact[field] = "No text provided"
+                elif field == 'confidence':
+                    fact[field] = 0.5
+                elif field == 'source':
+                    fact[field] = "unknown"
+                elif field == 'temporal_info':
+                    fact[field] = ""
+                elif field == 'entities':
+                    fact[field] = []
+                else:
+                    return False
+        
+        # Check that text is a non-empty string
+        if not isinstance(fact['text'], str) or not fact['text'].strip():
+            self.logger.warning(f"Fact has invalid or empty text: {fact}")
+            return False
+        
+        # Check that confidence is a number between 0 and 1
+        if not isinstance(fact['confidence'], (int, float)):
+            try:
+                fact['confidence'] = float(fact['confidence'])
+            except (ValueError, TypeError):
+                self.logger.warning(f"Fact has invalid confidence value: {fact}")
+                fact['confidence'] = 0.5
+        
+        # Ensure confidence is between 0 and 1
+        if fact['confidence'] < 0 or fact['confidence'] > 1:
+            self.logger.warning(f"Fact has confidence value outside range [0,1]: {fact}")
+            fact['confidence'] = max(0, min(1, fact['confidence']))
+        
+        # Check that source is a string
+        if not isinstance(fact['source'], str):
+            self.logger.warning(f"Fact has invalid source: {fact}")
+            fact['source'] = str(fact['source'])
+        
+        # Check that temporal_info is a string
+        if not isinstance(fact['temporal_info'], str):
+            self.logger.warning(f"Fact has invalid temporal_info: {fact}")
+            fact['temporal_info'] = str(fact['temporal_info'])
+        
+        # Check that entities is a list or convert it to a list
+        if not isinstance(fact['entities'], list):
+            if isinstance(fact['entities'], dict):
+                # Convert dict to list if it has the right structure
+                if 'persons' in fact['entities'] or 'locations' in fact['entities'] or 'organizations' in fact['entities']:
+                    entities_list = []
+                    for entity_type, entities in fact['entities'].items():
+                        if isinstance(entities, list):
+                            entities_list.extend(entities)
+                    fact['entities'] = entities_list
+                else:
+                    self.logger.warning(f"Fact has invalid entities dictionary: {fact}")
+                    fact['entities'] = list(fact['entities'].values())
+            else:
+                self.logger.warning(f"Fact has invalid entities: {fact}")
+                try:
+                    # Try to convert to list if it's a string
+                    if isinstance(fact['entities'], str):
+                        if fact['entities'].startswith('[') and fact['entities'].endswith(']'):
+                            # Looks like a JSON array string
+                            try:
+                                fact['entities'] = json.loads(fact['entities'])
+                            except json.JSONDecodeError:
+                                fact['entities'] = [e.strip() for e in fact['entities'][1:-1].split(',') if e.strip()]
+                        else:
+                            fact['entities'] = [e.strip() for e in fact['entities'].split(',') if e.strip()]
+                    else:
+                        fact['entities'] = []
+                except Exception as e:
+                    self.logger.warning(f"Error converting entities to list: {str(e)}")
+                    fact['entities'] = []
+        
+        # Ensure all entities are strings
+        fact['entities'] = [str(e) for e in fact['entities'] if e]
+        
+        # Check for placeholder text
+        placeholder_patterns = [
+            r'^fact\s*\d*\s*:',
+            r'^atomic\s*fact\s*\d*\s*:',
+            r'^here\s+are\s+the\s+facts',
+            r'^extracted\s+facts',
+            r'^no\s+facts\s+found',
+            r'^i\s+couldn\'t\s+extract',
+            r'^sorry,\s+i\s+couldn\'t',
+        ]
+        
+        for pattern in placeholder_patterns:
+            if re.search(pattern, fact['text'].lower()):
+                self.logger.warning(f"Fact contains placeholder text: {fact['text']}")
+                return False
+        
+        # All checks passed
+        return True
+
+    def _analyze_chunk_relationships(self, windows: List[Tuple[str, int, int]], window_facts_map: Dict[int, List[Dict]]) -> Dict[str, List[Dict]]:
+        """Analyze relationships between chunks and their facts."""
+        chunk_ids = list(window_facts_map.keys())
+        relationships = {}
+        
+        for i, chunk_id in enumerate(chunk_ids):
+            # Get nearby chunks (2 before and 2 after)
+            nearby_indices = list(range(max(0, i-2), min(len(chunk_ids), i+3)))
+            
+            # Add a few random chunks for broader relationships
+            import random
+            random_indices = random.sample(range(len(chunk_ids)), min(3, len(chunk_ids))))
+            comparison_indices = list(set(nearby_indices + random_indices) - {i})
+            
+            # Prepare chunks for comparison
+            chunks_to_compare = []
+            for idx in comparison_indices:
+                compare_id = chunk_ids[idx]
+                chunks_to_compare.append({
+                    "chunk_id": compare_id,
+                    "facts": window_facts_map[compare_id]
+                })
+            
+            # Skip if no chunks to compare
+            if not chunks_to_compare:
+                continue
+                
+            # Get facts for current chunk
+            current_facts = window_facts_map[chunk_id]
+            
+            # Skip if no facts in current chunk
+            if not current_facts:
+                continue
+                
+            # Analyze relationships
+            chunk_relationships = self._analyze_relationships(current_facts)
+            
+            # Store relationships
+            relationships[str(chunk_id)] = {
+                "chunk_id": chunk_id,
+                "relationships": chunk_relationships
+            }
+            
+        return relationships 

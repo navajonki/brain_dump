@@ -1,0 +1,182 @@
+# Mistral Instruct Model Configuration
+# This configuration is optimized for the Mistral Instruct model
+
+# Model parameters
+llm_backend: ollama
+model: mistral:instruct
+max_tokens: 4000
+temperature: 0.7
+max_response_tokens: 1000
+
+# Chunking parameters
+window_size: 1000
+overlap_size: 100
+
+# Enhanced features
+use_semantic_chunking: true
+enable_tagging: true
+enable_relationships: true
+track_transcript_positions: true
+
+# Function calling settings
+use_function_calling: true
+validate_function_output: true
+global_check_enabled: true
+tagging_enabled: true
+relationships_enabled: true
+
+# Ollama settings
+ollama_url: http://localhost:11434/api/generate
+
+# Prompt template module
+prompt_template_module: config.chunking.prompts
+
+# Function schemas
+function_schemas:
+  extract_facts:
+    name: extract_facts
+    description: Extract atomic facts from text
+    parameters:
+      type: object
+      properties:
+        facts:
+          type: array
+          items:
+            type: object
+            properties:
+              text:
+                type: string
+                description: The atomic fact text
+              confidence:
+                type: number
+                description: Confidence score (0.0-1.0)
+              source:
+                type: string
+                description: Source of the information
+              temporal_info:
+                type: object
+                description: Time-related information
+              entities:
+                type: array
+                items:
+                  type: string
+                description: Named entities mentioned
+
+# Prompts configuration
+prompts:
+  FIRST_PASS_PROMPT: |
+    You are a fact extraction system. Your task is to extract atomic facts from the given text.
+    Each fact must be:
+    1. A single piece of information
+    2. Self-contained (no context needed)
+    3. Free of ambiguous pronouns
+    4. Include temporal information if available
+
+    Text to process:
+    {window_text}
+
+    You must respond with ONLY a JSON object. Do not include any other text, explanations, or markdown formatting.
+    The JSON object must have this exact structure:
+    {{
+      "facts": [
+        {{
+          "text": "fact text",
+          "confidence": 0.9,
+          "source": "speaker",
+          "temporal_info": {{"period": "time period"}},
+          "entities": ["entity1", "entity2"]
+        }}
+      ]
+    }}
+  
+  SECOND_PASS_PROMPT: |
+    You are a fact validation system. Review these facts and ensure they are atomic and self-contained.
+    Split compound facts, resolve pronouns, add context, and verify temporal consistency.
+
+    Original facts:
+    {facts_text}
+
+    Original text for context:
+    {window_text}
+
+    You must respond with ONLY a JSON object. Do not include any other text, explanations, or markdown formatting.
+    The JSON object must have this exact structure:
+    {{
+      "revised_facts": [
+        {{
+          "text": "revised fact text",
+          "confidence": 0.9,
+          "source": "speaker",
+          "temporal_info": {{"period": "time period"}},
+          "entities": ["entity1", "entity2"]
+        }}
+      ]
+    }}
+  
+  GLOBAL_CHECK_PROMPT: |
+    You are a fact validation system. Review these facts for redundancies, contradictions, and timeline issues.
+
+    Facts to review:
+    {facts_text}
+
+    You must respond with ONLY a JSON object. Do not include any other text, explanations, or markdown formatting.
+    The JSON object must have this exact structure:
+    {{
+      "redundancies": [
+        {{
+          "facts": ["redundant fact 1", "redundant fact 2"],
+          "merged_fact": "merged version"
+        }}
+      ],
+      "contradictions": [
+        {{
+          "facts": ["contradicting fact 1", "contradicting fact 2"],
+          "resolution": "resolved version"
+        }}
+      ],
+      "timeline_issues": [
+        {{
+          "facts": ["fact with issue"],
+          "correction": "corrected version"
+        }}
+      ]
+    }}
+  
+  TAGGING_PROMPT: |
+    You are a tagging system. Analyze this fact and provide tags, topic, and entities.
+
+    Fact: {fact}
+
+    You must respond with ONLY a JSON object. Do not include any other text, explanations, or markdown formatting.
+    The JSON object must have this exact structure:
+    {{
+      "tags": ["tag1", "tag2"],
+      "topic": "main topic",
+      "entities": {{
+        "people": ["person1", "person2"],
+        "places": ["place1", "place2"],
+        "organizations": ["org1", "org2"],
+        "other": ["entity1", "entity2"]
+      }}
+    }}
+  
+  RELATIONSHIP_PROMPT: |
+    You are a relationship analysis system. Analyze semantic relationships between chunks.
+
+    Main chunk ({chunk_id}):
+    {chunk_text}
+
+    Compare with:
+    {chunks_to_compare}
+
+    You must respond with ONLY a JSON object. Do not include any other text, explanations, or markdown formatting.
+    The JSON object must have this exact structure:
+    {{
+      "related_chunks": [
+        {{
+          "id": "chunk_id",
+          "relationship_type": "type",
+          "score": 0.8
+        }}
+      ]
+    }} 

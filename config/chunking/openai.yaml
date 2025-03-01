@@ -1,0 +1,6 @@
+llm_backend: openai
+model: gpt-3.5-turbo
+max_tokens: 300
+use_semantic_chunking: true
+temperature: 0
+max_response_tokens: 10 

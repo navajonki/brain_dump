@@ -1,0 +1,6 @@
+llm_backend: ollama
+# model: mistral
+model: deepseek-r1:8b
+max_tokens: 300
+use_semantic_chunking: true
+ollama_url: http://localhost:11434/api/generate 

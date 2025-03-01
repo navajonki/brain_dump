@@ -1,0 +1,151 @@
+# Configuration for Llama 3 8B via Replicate
+llm_backend: replicate
+model: llama3:8b
+temperature: 0.7
+max_tokens: 1000
+top_p: 0.95
+system_prompt: "You are a helpful assistant that extracts factual information from text. You analyze text carefully and identify individual, atomic facts. You MUST ALWAYS return your response in the exact JSON format requested, with no additional text or explanations outside the JSON structure."
+
+# Chunking settings
+window_size: 1000
+window_overlap: 200
+min_chunk_size: 500
+max_chunk_size: 2000
+
+# Output settings
+output_dir: output
+output_format: markdown
+include_metadata: true
+include_original_text: true
+
+# Fact extraction settings
+first_pass_prompt: |
+  Extract atomic facts from the following text. An atomic fact is a single, self-contained piece of information that:
+  1. Contains exactly ONE piece of information
+  2. Can stand alone without context
+  3. Has no ambiguous pronouns (replace them with actual names/entities)
+  4. Includes relevant temporal information if available
+  
+  Guidelines:
+  - Each fact should be a complete, standalone statement
+  - Replace pronouns with specific names/entities
+  - Include speaker attribution if clear from context
+  - Include temporal markers if present
+  - Break compound statements into individual facts
+  
+  Text to process:
+  {text}
+  
+  IMPORTANT FORMATTING INSTRUCTIONS:
+  You MUST return ONLY a valid JSON array of fact objects with NO text before or after the JSON.
+  Each fact object MUST have ALL of the following fields:
+  - "text": The atomic fact as a complete sentence (REQUIRED)
+  - "confidence": A number between 0.0 and 1.0 (REQUIRED)
+  - "source": Where this fact came from, e.g., "speaker", "context", etc. (REQUIRED)
+  - "temporal_info": Any time information, or empty string if none (REQUIRED)
+  - "entities": An array of entity names mentioned in the fact (REQUIRED, can be empty array)
+  
+  Example format:
+  [
+    {
+      "text": "Jennifer grew up in Colorado.",
+      "confidence": 1.0,
+      "source": "speaker",
+      "temporal_info": "",
+      "entities": ["Jennifer", "Colorado"]
+    },
+    {
+      "text": "Jennifer graduated from a high school with 79 people in her graduating class.",
+      "confidence": 1.0,
+      "source": "speaker",
+      "temporal_info": "",
+      "entities": ["Jennifer"]
+    }
+  ]
+  
+  DO NOT include any explanations, headers, or text outside the JSON array. Return ONLY the JSON array.
+
+second_pass_prompt: |
+  Review these extracted facts and improve them to ensure they are truly atomic (containing exactly ONE piece of information) and self-contained.
+  
+  For each fact:
+  1. Break down complex facts into simpler ones
+  2. Ensure all pronouns are replaced with specific entities
+  3. Add missing context if needed for the fact to stand alone
+  4. Include temporal information when available
+  5. Remove any redundant facts
+  
+  Original text:
+  {text}
+  
+  Facts to review:
+  {facts}
+  
+  IMPORTANT FORMATTING INSTRUCTIONS:
+  You MUST return ONLY a valid JSON array of fact objects with NO text before or after the JSON.
+  Each fact object MUST have ALL of the following fields:
+  - "text": The atomic fact as a complete sentence (REQUIRED)
+  - "confidence": A number between 0.0 and 1.0 (REQUIRED)
+  - "source": Where this fact came from, e.g., "speaker", "context", etc. (REQUIRED)
+  - "temporal_info": Any time information, or empty string if none (REQUIRED)
+  - "entities": An array of entity names mentioned in the fact (REQUIRED, can be empty array)
+  
+  Example format:
+  [
+    {
+      "text": "Jennifer grew up in Colorado.",
+      "confidence": 1.0,
+      "source": "speaker",
+      "temporal_info": "",
+      "entities": ["Jennifer", "Colorado"]
+    }
+  ]
+  
+  DO NOT include any explanations, headers, or text outside the JSON array. Return ONLY the JSON array.
+
+tagging_prompt: |
+  Tag the following fact with relevant topics and entities.
+  
+  Fact: {fact_text}
+  
+  IMPORTANT FORMATTING INSTRUCTIONS:
+  You MUST return ONLY a valid JSON object with NO text before or after the JSON.
+  The JSON object MUST have ALL of the following fields:
+  - "topics": Array of topic strings (REQUIRED)
+  - "tags": Array of tag strings (REQUIRED)
+  - "entities": Array of entity strings (REQUIRED)
+  - "sentiment": One of: "positive", "negative", or "neutral" (REQUIRED)
+  - "importance": Integer from 1 to 10 (REQUIRED)
+  
+  Example format:
+  {
+    "topics": ["personal_background", "education"],
+    "tags": ["childhood", "school"],
+    "entities": ["Jennifer", "Colorado"],
+    "sentiment": "neutral",
+    "importance": 7
+  }
+  
+  DO NOT include any explanations or additional text outside the JSON object. Return ONLY the JSON object.
+
+relationship_prompt: |
+  Analyze the relationship between these facts:
+  
+  Fact 1: {fact1}
+  Fact 2: {fact2}
+  
+  IMPORTANT FORMATTING INSTRUCTIONS:
+  You MUST return ONLY a valid JSON object with NO text before or after the JSON.
+  The JSON object MUST have ALL of the following fields:
+  - "relationship_type": MUST be one of these exact strings: "supporting", "contradicting", "elaborating", or "unrelated" (REQUIRED)
+  - "confidence": A number between 0.0 and 1.0 (REQUIRED)
+  - "explanation": Brief explanation of the relationship (REQUIRED)
+  
+  Example format:
+  {
+    "relationship_type": "elaborating",
+    "confidence": 0.95,
+    "explanation": "Fact 2 provides additional details about Jennifer's education mentioned in Fact 1"
+  }
+  
+  DO NOT include any explanations or additional text outside the JSON object. Return ONLY the JSON object. 

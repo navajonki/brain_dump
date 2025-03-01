@@ -1,0 +1,92 @@
+Metadata-Version: 2.2
+Name: zettel
+Version: 0.1.0
+Summary: A tool for processing audio notes into a knowledge base
+Author: Your Name
+Author-email: your.email@example.com
+Requires-Python: >=3.10,<3.12
+Description-Content-Type: text/markdown
+Requires-Dist: openai==1.3.0
+Requires-Dist: openai-whisper==20231117
+Requires-Dist: pyyaml==6.0.1
+Requires-Dist: tiktoken==0.5.2
+Requires-Dist: chromadb==0.4.22
+Requires-Dist: neo4j==5.14.1
+Requires-Dist: python-dotenv==1.0.0
+Requires-Dist: pydub==0.25.1
+Requires-Dist: pytest==7.4.3
+Requires-Dist: pytest-asyncio==0.21.1
+Provides-Extra: dev
+Requires-Dist: pytest>=7.4.3; extra == "dev"
+Requires-Dist: pytest-asyncio>=0.21.1; extra == "dev"
+Dynamic: author
+Dynamic: author-email
+Dynamic: description
+Dynamic: description-content-type
+Dynamic: provides-extra
+Dynamic: requires-dist
+Dynamic: requires-python
+Dynamic: summary
+
+# Zettel Audio Notes Processor
+
+A system for processing audio notes into a searchable knowledge base with summaries and topic organization.
+
+## Prerequisites
+
+- Python 3.11 (recommended) or 3.10
+- FFmpeg (required for audio processing)
+
+## Installation
+
+1. Install Python 3.11:
+   ```bash
+   # On macOS with Homebrew:
+   brew install python@3.11
+   
+   # On Ubuntu/Debian:
+   sudo apt update
+   sudo apt install python3.11 python3.11-venv
+   ```
+
+2. Create and activate a virtual environment:
+   ```bash
+   # Create venv
+   python3.11 -m venv .venv
+   
+   # Activate venv
+   source .venv/bin/activate  # On Unix/macOS
+   # or
+   .venv\Scripts\activate     # On Windows
+   ```
+
+3. Install dependencies:
+   ```bash
+   # Upgrade pip first
+   python -m pip install --upgrade pip
+   
+   # Install all requirements (recommended)
+   python -m pip install -r requirements.txt
+   
+   # If you encounter issues, install core packages individually:
+   python -m pip install tiktoken
+   python -m pip install openai
+   python -m pip install openai-whisper
+   python -m pip install chromadb
+   python -m pip install neo4j
+   ```
+
+4. Set up environment variables:
+   ```
+
+## Development
+
+1. Install development dependencies:
+   ```bash
+   python -m pip install pytest pytest-asyncio
+   ```
+
+2. Run tests:
+   ```bash
+   pytest
+   ```
