@@ -13,13 +13,7 @@ from dotenv import load_dotenv
 from utils.logging import get_logger
 from utils.file_ops import OutputManager
 from config.chunking.chunking_config import ChunkingConfig
-from config.chunking.prompts import (
-    FIRST_PASS_PROMPT, 
-    SECOND_PASS_PROMPT, 
-    GLOBAL_CHECK_PROMPT,
-    TAGGING_PROMPT,
-    RELATIONSHIP_PROMPT
-)
+# No longer importing prompts directly, using prompt registry instead
 import jsonschema
 from core.llm_backends import create_llm_backend
 import uuid
@@ -556,49 +550,54 @@ class AtomicChunker:
         """
         self.logger.debug(f"Starting first pass fact extraction for window {window_num}")
         
-        # Get the first pass prompt from config
-        prompt_template = None
-        
-        # Try different ways to access the prompt
-        if hasattr(self.config, 'first_pass_prompt') and self.config.first_pass_prompt:
-            prompt_template = self.config.first_pass_prompt
-            self.logger.debug("Using first_pass_prompt from config")
-        elif hasattr(self.config.prompts, 'FIRST_PASS_PROMPT') and self.config.prompts.FIRST_PASS_PROMPT:
-            prompt_template = self.config.prompts.FIRST_PASS_PROMPT
-            self.logger.debug("Using FIRST_PASS_PROMPT from config.prompts")
-        elif 'FIRST_PASS_PROMPT' in globals():
-            prompt_template = globals()['FIRST_PASS_PROMPT']
-            self.logger.debug("Using FIRST_PASS_PROMPT from globals")
-        
-        if not prompt_template:
-            self.logger.warning("First pass prompt template is empty. No facts will be extracted.")
-            return []
-            
-        # Format the prompt with the window text
+        # Get the first pass prompt from the centralized registry
         try:
-            # Clean up the template to ensure proper formatting
-            if '{text}' in prompt_template:
-                prompt = prompt_template.replace('{text}', window_text)
-            elif '{window_text}' in prompt_template:
-                prompt = prompt_template.replace('{window_text}', window_text)
-            else:
-                # If no placeholder is found, append the text to the prompt
-                prompt = f"{prompt_template}\n\nText: {window_text}"
+            # Use the new get_prompt method to get the formatted prompt
+            prompt = self.config.get_prompt("first_pass", window_text=window_text)
+            self.logger.debug("Using first_pass prompt from registry")
+        except (ValueError, KeyError) as e:
+            self.logger.warning(f"Error getting first_pass prompt from registry: {str(e)}")
+            
+            # Fall back to legacy prompt access methods
+            prompt_template = None
+            
+            # Try different ways to access the prompt (legacy)
+            if hasattr(self.config, 'first_pass_prompt') and self.config.first_pass_prompt:
+                prompt_template = self.config.first_pass_prompt
+                self.logger.debug("Using first_pass_prompt from config (legacy)")
+            elif hasattr(self.config.prompts, 'FIRST_PASS_PROMPT') and self.config.prompts.FIRST_PASS_PROMPT:
+                prompt_template = self.config.prompts.FIRST_PASS_PROMPT
+                self.logger.debug("Using FIRST_PASS_PROMPT from config.prompts (legacy)")
+            
+            if not prompt_template:
+                self.logger.warning("First pass prompt template is empty. No facts will be extracted.")
+                return []
                 
-            self.logger.debug(f"First pass prompt (first 200 chars): {prompt[:200]}...")
-            self.logger.debug(f"Complete LLM prompt:\n{prompt}\n")
-        except Exception as e:
-            self.logger.error(f"Error formatting prompt: {str(e)}")
-            # Fallback to a simple prompt
-            prompt = f"""
-            Extract atomic facts from the following text. Return a JSON array of fact objects.
-            
-            Text:
-            {window_text}
-            
-            Return ONLY a JSON array of facts with these fields: text, confidence, source, temporal_info, entities.
-            """
+            # Format the prompt with the window text (legacy method)
+            try:
+                # Clean up the template to ensure proper formatting
+                if '{text}' in prompt_template:
+                    prompt = prompt_template.replace('{text}', window_text)
+                elif '{window_text}' in prompt_template:
+                    prompt = prompt_template.replace('{window_text}', window_text)
+                else:
+                    # If no placeholder is found, append the text to the prompt
+                    prompt = f"{prompt_template}\n\nText: {window_text}"
+            except Exception as e:
+                self.logger.error(f"Error formatting prompt: {str(e)}")
+                # Fallback to a simple prompt
+                prompt = f"""
+                Extract atomic facts from the following text. Return a JSON array of fact objects.
+                
+                Text:
+                {window_text}
+                
+                Return ONLY a JSON array of facts with these fields: text, confidence, source, temporal_info, entities.
+                """
             self.logger.debug("Using fallback prompt due to formatting error")
+        
+        self.logger.debug(f"First pass prompt (first 200 chars): {prompt[:200]}...")
+        self.logger.debug(f"Complete LLM prompt:\n{prompt}\n")
         
         # Use retry mechanism for robust fact extraction
         max_extraction_attempts = 2
@@ -811,51 +810,56 @@ class AtomicChunker:
         else:
             facts_text = "\n".join([f"{i+1}. {fact}" for i, fact in enumerate(first_pass_facts)])
             
-        # Get the second pass prompt from config
-        prompt_template = None
-        
-        # Try different ways to access the prompt
-        if hasattr(self.config, 'second_pass_prompt') and self.config.second_pass_prompt:
-            prompt_template = self.config.second_pass_prompt
-            self.logger.debug("Using second_pass_prompt from config")
-        elif hasattr(self.config.prompts, 'SECOND_PASS_PROMPT') and self.config.prompts.SECOND_PASS_PROMPT:
-            prompt_template = self.config.prompts.SECOND_PASS_PROMPT
-            self.logger.debug("Using SECOND_PASS_PROMPT from config.prompts")
-        elif 'SECOND_PASS_PROMPT' in globals():
-            prompt_template = globals()['SECOND_PASS_PROMPT']
-            self.logger.debug("Using SECOND_PASS_PROMPT from globals")
-        
-        if not prompt_template:
-            self.logger.warning("Second pass prompt template is empty. Using first pass facts as is.")
-            return first_pass_facts
-            
-        # Format the prompt with the window text and facts
+        # Get the second pass prompt from the centralized registry
         try:
-            # Clean up the template to ensure proper formatting
-            if '{text}' in prompt_template and '{facts}' in prompt_template:
-                prompt = prompt_template.replace('{text}', window_text).replace('{facts}', facts_text)
-            elif '{window_text}' in prompt_template and '{facts_text}' in prompt_template:
-                prompt = prompt_template.replace('{window_text}', window_text).replace('{facts_text}', facts_text)
-            else:
-                # If no placeholder is found, append the text and facts to the prompt
-                prompt = f"{prompt_template}\n\nText: {window_text}\n\nFacts:\n{facts_text}"
+            # Use the new get_prompt method to get the formatted prompt
+            prompt = self.config.get_prompt("second_pass", window_text=window_text, facts_text=facts_text)
+            self.logger.debug("Using second_pass prompt from registry")
+        except (ValueError, KeyError) as e:
+            self.logger.warning(f"Error getting second_pass prompt from registry: {str(e)}")
+            
+            # Fall back to legacy prompt access methods
+            prompt_template = None
+            
+            # Try different ways to access the prompt (legacy)
+            if hasattr(self.config, 'second_pass_prompt') and self.config.second_pass_prompt:
+                prompt_template = self.config.second_pass_prompt
+                self.logger.debug("Using second_pass_prompt from config (legacy)")
+            elif hasattr(self.config.prompts, 'SECOND_PASS_PROMPT') and self.config.prompts.SECOND_PASS_PROMPT:
+                prompt_template = self.config.prompts.SECOND_PASS_PROMPT
+                self.logger.debug("Using SECOND_PASS_PROMPT from config.prompts (legacy)")
+            
+            if not prompt_template:
+                self.logger.warning("Second pass prompt template is empty. Using first pass facts as is.")
+                return first_pass_facts
                 
-            self.logger.debug(f"Second pass prompt (first 200 chars): {prompt[:200]}...")
-        except Exception as e:
-            self.logger.error(f"Error formatting prompt: {str(e)}")
-            # Fallback to a simple prompt
-            prompt = f"""
-            Review and improve these extracted facts to ensure they are atomic and self-contained.
-            
-            Original text:
-            {window_text}
-            
-            Facts to review:
-            {facts_text}
-            
-            Return ONLY a JSON array of facts with these fields: text, confidence, source, temporal_info, entities.
-            """
+            # Format the prompt with the window text and facts (legacy method)
+            try:
+                # Clean up the template to ensure proper formatting
+                if '{text}' in prompt_template and '{facts}' in prompt_template:
+                    prompt = prompt_template.replace('{text}', window_text).replace('{facts}', facts_text)
+                elif '{window_text}' in prompt_template and '{facts_text}' in prompt_template:
+                    prompt = prompt_template.replace('{window_text}', window_text).replace('{facts_text}', facts_text)
+                else:
+                    # If no placeholder is found, append the text and facts to the prompt
+                    prompt = f"{prompt_template}\n\nText: {window_text}\n\nFacts:\n{facts_text}"
+            except Exception as e:
+                self.logger.error(f"Error formatting prompt: {str(e)}")
+                # Fallback to a simple prompt
+                prompt = f"""
+                Review and improve these extracted facts to ensure they are atomic and self-contained.
+                
+                Original text:
+                {window_text}
+                
+                Facts to review:
+                {facts_text}
+                
+                Return ONLY a JSON array of facts with these fields: text, confidence, source, temporal_info, entities.
+                """
             self.logger.debug("Using fallback prompt due to formatting error")
+        
+        self.logger.debug(f"Second pass prompt (first 200 chars): {prompt[:200]}...")
         
         # Call the LLM with the prompt
         response = self._call_llm(prompt)
@@ -992,35 +996,40 @@ class AtomicChunker:
         # Create a string with all facts
         facts_text = "\n".join([f"{i+1}. {fact.get('text', '') if isinstance(fact, dict) else fact}" for i, fact in enumerate(facts)])
         
-        # Get the global check prompt from config
-        prompt_template = None
-        
-        # Try different ways to access the prompt
-        if hasattr(self.config, 'global_check_prompt') and self.config.global_check_prompt:
-            prompt_template = self.config.global_check_prompt
-            self.logger.debug("Using global_check_prompt from config")
-        elif hasattr(self.config.prompts, 'GLOBAL_CHECK_PROMPT') and self.config.prompts.GLOBAL_CHECK_PROMPT:
-            prompt_template = self.config.prompts.GLOBAL_CHECK_PROMPT
-            self.logger.debug("Using GLOBAL_CHECK_PROMPT from config.prompts")
-        elif 'GLOBAL_CHECK_PROMPT' in globals():
-            prompt_template = globals()['GLOBAL_CHECK_PROMPT']
-            self.logger.debug("Using GLOBAL_CHECK_PROMPT from globals")
-            
-        if not prompt_template:
-            self.logger.warning("Global check prompt template is empty. No global check will be performed.")
-            return facts
-            
-        # Format the prompt
+        # Get the global check prompt from the centralized registry
         try:
-            if '{facts_text}' in prompt_template:
-                prompt = prompt_template.replace('{facts_text}', facts_text)
-            else:
-                prompt = f"{prompt_template}\n\nFacts:\n{facts_text}"
+            # Use the new get_prompt method to get the formatted prompt
+            prompt = self.config.get_prompt("global_check", facts_text=facts_text)
+            self.logger.debug("Using global_check prompt from registry")
+        except (ValueError, KeyError) as e:
+            self.logger.warning(f"Error getting global_check prompt from registry: {str(e)}")
+            
+            # Fall back to legacy prompt access methods
+            prompt_template = None
+            
+            # Try different ways to access the prompt (legacy)
+            if hasattr(self.config, 'global_check_prompt') and self.config.global_check_prompt:
+                prompt_template = self.config.global_check_prompt
+                self.logger.debug("Using global_check_prompt from config (legacy)")
+            elif hasattr(self.config.prompts, 'GLOBAL_CHECK_PROMPT') and self.config.prompts.GLOBAL_CHECK_PROMPT:
+                prompt_template = self.config.prompts.GLOBAL_CHECK_PROMPT
+                self.logger.debug("Using GLOBAL_CHECK_PROMPT from config.prompts (legacy)")
+            
+            if not prompt_template:
+                self.logger.warning("Global check prompt template is empty. No global check will be performed.")
+                return facts
                 
-            self.logger.debug(f"Global check prompt (first 200 chars): {prompt[:200]}...")
-        except Exception as e:
-            self.logger.error(f"Error formatting global check prompt: {str(e)}")
-            return facts
+            # Format the prompt (legacy method)
+            try:
+                if '{facts_text}' in prompt_template:
+                    prompt = prompt_template.replace('{facts_text}', facts_text)
+                else:
+                    prompt = f"{prompt_template}\n\nFacts:\n{facts_text}"
+            except Exception as e:
+                self.logger.error(f"Error formatting global check prompt: {str(e)}")
+                return facts
+                
+        self.logger.debug(f"Global check prompt (first 200 chars): {prompt[:200]}...")
             
         # Call the LLM with the prompt
         response = self._call_llm(prompt)
@@ -1135,65 +1144,75 @@ class AtomicChunker:
             fact["entities"] = {"people": [], "places": [], "organizations": [], "other": []}
             return fact
         
-        # Get the tagging prompt from config
-        prompt_template = None
-        
-        # Try different ways to access the prompt
-        if hasattr(self.config, 'tagging_prompt') and self.config.tagging_prompt:
-            prompt_template = self.config.tagging_prompt
-        elif hasattr(self.config.prompts, 'TAGGING_PROMPT') and self.config.prompts.TAGGING_PROMPT:
-            prompt_template = self.config.prompts.TAGGING_PROMPT
-        elif 'TAGGING_PROMPT' in globals():
-            prompt_template = TAGGING_PROMPT
-        
-        if not prompt_template:
-            # Use a default prompt if none is found
-            prompt_template = """
-            Analyze this fact and categorize its entities:
-
-            Fact: {fact_text}
-
-            Return a valid JSON object with this EXACT structure:
-            {
-                "tags": ["keyword1", "keyword2"],
-                "topics": ["topic1", "topic2"],
-                "entities": {
-                    "people": ["person names only"],
-                    "places": ["location names only"],
-                    "organizations": ["organization names only"],
-                    "other": ["anything else"]
-                },
-                "sentiment": "positive|negative|neutral",
-                "importance": 1-10
-            }
-
-            IMPORTANT:
-            - Put all person names in "people"
-            - Put all location names in "places"
-            - Put all organization/institution names in "organizations"
-            - Put remaining entities in "other"
-            - Ensure proper JSON formatting with quotes around all strings
-            - Rate importance on a scale of 1-10
-            """
-            
-        # Format the prompt
+        # Get the tagging prompt from the centralized registry
         try:
-            # Try different placeholder formats
-            if '{fact_text}' in prompt_template:
-                prompt = prompt_template.replace('{fact_text}', fact_text)
-            elif '{text}' in prompt_template:
-                prompt = prompt_template.replace('{text}', fact_text)
-            else:
-                prompt = f"{prompt_template}\n\nFact: {fact_text}"
+            # Use the new get_prompt method to get the formatted prompt
+            prompt = self.config.get_prompt("tagging", fact=fact_text)
+            self.logger.debug("Using tagging prompt from registry")
+        except (ValueError, KeyError) as e:
+            self.logger.warning(f"Error getting tagging prompt from registry: {str(e)}")
+            
+            # Fall back to legacy prompt access methods
+            prompt_template = None
+            
+            # Try different ways to access the prompt (legacy)
+            if hasattr(self.config, 'tagging_prompt') and self.config.tagging_prompt:
+                prompt_template = self.config.tagging_prompt
+                self.logger.debug("Using tagging_prompt from config (legacy)")
+            elif hasattr(self.config.prompts, 'TAGGING_PROMPT') and self.config.prompts.TAGGING_PROMPT:
+                prompt_template = self.config.prompts.TAGGING_PROMPT
+                self.logger.debug("Using TAGGING_PROMPT from config.prompts (legacy)")
+            
+            if not prompt_template:
+                # Use a default prompt if none is found
+                prompt_template = """
+                Analyze this fact and categorize its entities:
+
+                Fact: {fact_text}
+
+                Return a valid JSON object with this EXACT structure:
+                {
+                    "tags": ["keyword1", "keyword2"],
+                    "topics": ["topic1", "topic2"],
+                    "entities": {
+                        "people": ["person names only"],
+                        "places": ["location names only"],
+                        "organizations": ["organization names only"],
+                        "other": ["anything else"]
+                    },
+                    "sentiment": "positive|negative|neutral",
+                    "importance": 1-10
+                }
+
+                IMPORTANT:
+                - Put all person names in "people"
+                - Put all location names in "places"
+                - Put all organization/institution names in "organizations"
+                - Put remaining entities in "other"
+                - Ensure proper JSON formatting with quotes around all strings
+                - Rate importance on a scale of 1-10
+                """
                 
-            self.logger.debug(f"Tagging prompt for fact {fact_num}: {prompt[:200]}...")
-        except Exception as e:
-            self.logger.error(f"Error formatting tagging prompt: {str(e)}")
-            # Use a simple fallback prompt
-            prompt = f"""
-            Analyze this fact and return JSON with tags, topic, and categorized entities:
-            {fact_text}
-            """
+            # Format the prompt (legacy method)
+            try:
+                # Try different placeholder formats
+                if '{fact_text}' in prompt_template:
+                    prompt = prompt_template.replace('{fact_text}', fact_text)
+                elif '{text}' in prompt_template:
+                    prompt = prompt_template.replace('{text}', fact_text)
+                elif '{fact}' in prompt_template:
+                    prompt = prompt_template.replace('{fact}', fact_text)
+                else:
+                    prompt = f"{prompt_template}\n\nFact: {fact_text}"
+            except Exception as e:
+                self.logger.error(f"Error formatting tagging prompt: {str(e)}")
+                # Use a simple fallback prompt
+                prompt = f"""
+                Analyze this fact and return JSON with tags, topic, and categorized entities:
+                {fact_text}
+                """
+        
+        self.logger.debug(f"Tagging prompt for fact {fact_num}: {prompt[:200]}...")
         
         # Call LLM with expected JSON format
         response = self._call_llm(prompt)
@@ -1425,80 +1444,91 @@ class AtomicChunker:
             
         self.logger.debug(f"Analyzing relationships between {len(facts)} facts")
         
-        # Get the relationship prompt from config
-        prompt_template = None
+        # Create a numbered list of facts for the prompt
+        facts_text = ""
+        for i, fact in enumerate(facts):
+            if isinstance(fact, dict):
+                facts_text += f"{i+1}. {fact.get('text', '')}\n"
+            else:
+                facts_text += f"{i+1}. {fact}\n"
         
-        # Try different ways to access the prompt
-        if hasattr(self.config, 'relationship_prompt') and self.config.relationship_prompt:
-            prompt_template = self.config.relationship_prompt
-            self.logger.debug("Using relationship_prompt from config")
-        elif hasattr(self.config.prompts, 'RELATIONSHIP_PROMPT') and self.config.prompts.RELATIONSHIP_PROMPT:
-            prompt_template = self.config.prompts.RELATIONSHIP_PROMPT
-            self.logger.debug("Using RELATIONSHIP_PROMPT from config.prompts")
-        elif 'RELATIONSHIP_PROMPT' in globals():
-            prompt_template = globals()['RELATIONSHIP_PROMPT']
-            self.logger.debug("Using RELATIONSHIP_PROMPT from globals")
+        # Get the relationship prompt from the centralized registry
+        try:
+            # Use the new get_prompt method to get the formatted prompt
+            prompt = self.config.get_prompt("relationship", facts_text=facts_text)
+            self.logger.debug("Using relationship prompt from registry")
             
-        if not prompt_template:
-            self.logger.warning("Relationship prompt template is empty. No relationships will be analyzed.")
-            return {}
+            # Check if we need pairwise analysis based on prompt parameters
+            template = self.config.prompt_registry.get("relationship", self.config.model)
+            if "fact1" in template.required_params and "fact2" in template.required_params:
+                # Pairwise analysis
+                self.logger.debug("Using pairwise relationship analysis based on prompt requirements")
+                return self._analyze_pairwise_relationships(facts)
             
-        # Check if the prompt is for pairwise analysis or global analysis
-        if '{fact1}' in prompt_template and '{fact2}' in prompt_template:
-            # Pairwise analysis
-            self.logger.debug("Using pairwise relationship analysis")
-            return self._analyze_pairwise_relationships(facts)
-        else:
-            # Global analysis
-            self.logger.debug("Using global relationship analysis")
+            # Continue with global analysis
+        except (ValueError, KeyError) as e:
+            self.logger.warning(f"Error getting relationship prompt from registry: {str(e)}")
             
-            # Create a numbered list of facts for the prompt
-            facts_text = ""
-            for i, fact in enumerate(facts):
-                if isinstance(fact, dict):
-                    facts_text += f"{i+1}. {fact.get('text', '')}\n"
-                else:
-                    facts_text += f"{i+1}. {fact}\n"
-                    
-            # Format the prompt
+            # Fall back to legacy prompt access methods
+            prompt_template = None
+            
+            # Try different ways to access the prompt (legacy)
+            if hasattr(self.config, 'relationship_prompt') and self.config.relationship_prompt:
+                prompt_template = self.config.relationship_prompt
+                self.logger.debug("Using relationship_prompt from config (legacy)")
+            elif hasattr(self.config.prompts, 'RELATIONSHIP_PROMPT') and self.config.prompts.RELATIONSHIP_PROMPT:
+                prompt_template = self.config.prompts.RELATIONSHIP_PROMPT
+                self.logger.debug("Using RELATIONSHIP_PROMPT from config.prompts (legacy)")
+            
+            if not prompt_template:
+                self.logger.warning("Relationship prompt template is empty. No relationships will be analyzed.")
+                return {}
+                
+            # Check if the prompt is for pairwise analysis or global analysis
+            if '{fact1}' in prompt_template and '{fact2}' in prompt_template:
+                # Pairwise analysis
+                self.logger.debug("Using pairwise relationship analysis")
+                return self._analyze_pairwise_relationships(facts)
+            
+            # Format the prompt (legacy method)
             try:
                 if '{facts_text}' in prompt_template:
                     prompt = prompt_template.replace('{facts_text}', facts_text)
                 else:
                     prompt = f"{prompt_template}\n\nFacts:\n{facts_text}"
-                    
-                self.logger.debug(f"Relationship prompt (first 200 chars): {prompt[:200]}...")
             except Exception as e:
                 self.logger.error(f"Error formatting relationship prompt: {str(e)}")
                 return {}
-                
-            # Call the LLM with the prompt
-            response = self._call_llm(prompt)
-            
-            # Process the response
-            relationships = {}
-            if not response:
-                self.logger.warning("Empty response from LLM for relationship analysis")
-                return relationships
-                
-            # Try to parse the response as JSON
-            try:
-                if isinstance(response, dict) and 'relationships' in response:
-                    # If the response is already a dictionary with a 'relationships' key
-                    relationships = response['relationships']
-                elif isinstance(response, str):
-                    # Try to parse the response as a JSON string
-                    import json
-                    parsed = json.loads(response)
-                    if isinstance(parsed, dict) and 'relationships' in parsed:
-                        relationships = parsed['relationships']
-                    else:
-                        relationships = parsed  # Assume the whole response is the relationships object
-            except Exception as e:
-                self.logger.error(f"Error parsing relationship response: {str(e)}")
-                
-            self.logger.debug(f"Analyzed {len(relationships)} relationships")
+        
+        self.logger.debug(f"Relationship prompt (first 200 chars): {prompt[:200]}...")
+        
+        # Call the LLM with the prompt
+        response = self._call_llm(prompt)
+        
+        # Process the response
+        relationships = {}
+        if not response:
+            self.logger.warning("Empty response from LLM for relationship analysis")
             return relationships
+        
+        # Try to parse the response as JSON
+        try:
+            if isinstance(response, dict) and 'relationships' in response:
+                # If the response is already a dictionary with a 'relationships' key
+                relationships = response['relationships']
+            elif isinstance(response, str):
+                # Try to parse the response as a JSON string
+                import json
+                parsed = json.loads(response)
+                if isinstance(parsed, dict) and 'relationships' in parsed:
+                    relationships = parsed['relationships']
+                else:
+                    relationships = parsed  # Assume the whole response is the relationships object
+        except Exception as e:
+            self.logger.error(f"Error parsing relationship response: {str(e)}")
+            
+        self.logger.debug(f"Analyzed {len(relationships)} relationships")
+        return relationships
             
     def _analyze_pairwise_relationships(self, facts):
         """

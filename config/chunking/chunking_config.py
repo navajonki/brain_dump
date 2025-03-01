@@ -1,4 +1,6 @@
-from typing import Dict, Any
+from typing import Dict, Any, Optional, Union
+import logging
+from core.prompts import template_registry, PromptTemplate
 
 class ChunkingConfig:
     """Configuration for the chunking process."""
@@ -24,80 +26,139 @@ class ChunkingConfig:
         self.relationships_enabled = kwargs.get('relationships_enabled', True)
         self.track_transcript_positions = kwargs.get('track_transcript_positions', True)
         
-        # Prompts configuration - support both uppercase and lowercase prompt names
+        # Initialize the prompt registry
+        self.prompt_registry = template_registry
+        
+        # Create legacy prompt access objects for backward compatibility
         self.prompts = type('Prompts', (), {})()
         
-        # Load prompts from kwargs
-        # First check for lowercase prompt names (from YAML)
-        self.first_pass_prompt = kwargs.get('first_pass_prompt', '')
-        self.second_pass_prompt = kwargs.get('second_pass_prompt', '')
-        self.global_check_prompt = kwargs.get('global_check_prompt', '')
-        self.tagging_prompt = kwargs.get('tagging_prompt', '')
-        self.relationship_prompt = kwargs.get('relationship_prompt', '')
-        
-        # Also set them in the prompts namespace with uppercase names for backward compatibility
-        self.prompts.FIRST_PASS_PROMPT = self.first_pass_prompt
-        self.prompts.SECOND_PASS_PROMPT = self.second_pass_prompt
-        self.prompts.GLOBAL_CHECK_PROMPT = self.global_check_prompt
-        self.prompts.TAGGING_PROMPT = self.tagging_prompt
-        self.prompts.RELATIONSHIP_PROMPT = self.relationship_prompt
+        # Load custom prompts from YAML config
+        self._load_prompt_overrides(kwargs)
         
         # Function schemas
         self.function_schemas = kwargs.get('function_schemas', {})
         
-        # Ollama settings
-        self.ollama_url = "http://localhost:11434/api/generate"
-        
         # Output settings
-        self.output_dir = "output/chunks"
-        self.debug = True
+        self.output_dir = kwargs.get('output_dir', "output/chunks")
+        self.debug = kwargs.get('debug', True)
         
         # Load custom prompts if a different module is specified
         if 'prompt_template_module' in kwargs:
             self.prompt_template_module = kwargs.get('prompt_template_module')
-            self._load_prompts()
+            self._load_prompts_from_module()
     
-    def _load_prompts(self):
+    def _load_prompt_overrides(self, kwargs: Dict[str, Any]) -> None:
+        """Load prompt overrides from config kwargs."""
+        # Define the mapping of prompt names
+        prompt_keys = [
+            'first_pass_prompt', 
+            'second_pass_prompt', 
+            'global_check_prompt',
+            'tagging_prompt',
+            'relationship_prompt'
+        ]
+        
+        # Check for and register prompt overrides from config
+        for key in prompt_keys:
+            if key in kwargs and kwargs[key]:
+                # Get normalized name (remove '_prompt' suffix)
+                normalized_name = key.replace('_prompt', '')
+                
+                # Register the override in the prompt registry
+                self.prompt_registry.register(
+                    name=normalized_name,
+                    template=kwargs[key],
+                    model=self.model if self.use_function_calling else None,
+                    description=f"Custom {normalized_name} prompt from config",
+                    override=True
+                )
+                
+                # Store for direct attribute access (legacy style)
+                setattr(self, key, kwargs[key])
+                
+                # Also set uppercase version in prompts namespace (very legacy style)
+                uppercase_key = key.upper()
+                setattr(self.prompts, uppercase_key, kwargs[key])
+    
+    def _load_prompts_from_module(self) -> None:
         """Load prompt templates from the configured module."""
         try:
             if not hasattr(self, 'prompt_template_module') or not self.prompt_template_module:
                 return
-                
-            module_path = self.prompt_template_module.replace(".", "/") + ".py"
-            with open(module_path, "r") as f:
-                module_code = f.read()
-                
-            # Create a new module
-            import types
-            module = types.ModuleType(self.prompt_template_module)
             
-            # Execute the module code
-            exec(module_code, module.__dict__)
+            # Use the prompt registry to load from module
+            self.prompt_registry.load_from_module(
+                self.prompt_template_module,
+                model=self.model if self.use_function_calling else None
+            )
             
-            # Store prompts
-            if hasattr(module, 'FIRST_PASS_PROMPT'):
-                self.first_pass_prompt = module.FIRST_PASS_PROMPT
-                self.prompts.FIRST_PASS_PROMPT = module.FIRST_PASS_PROMPT
-            
-            if hasattr(module, 'SECOND_PASS_PROMPT'):
-                self.second_pass_prompt = module.SECOND_PASS_PROMPT
-                self.prompts.SECOND_PASS_PROMPT = module.SECOND_PASS_PROMPT
-            
-            if hasattr(module, 'TAGGING_PROMPT'):
-                self.tagging_prompt = module.TAGGING_PROMPT
-                self.prompts.TAGGING_PROMPT = module.TAGGING_PROMPT
-            
-            if hasattr(module, 'RELATIONSHIP_PROMPT'):
-                self.relationship_prompt = module.RELATIONSHIP_PROMPT
-                self.prompts.RELATIONSHIP_PROMPT = module.RELATIONSHIP_PROMPT
-            
-            if hasattr(module, 'GLOBAL_CHECK_PROMPT'):
-                self.global_check_prompt = module.GLOBAL_CHECK_PROMPT
-                self.prompts.GLOBAL_CHECK_PROMPT = module.GLOBAL_CHECK_PROMPT
+            # Update legacy access attributes
+            self._update_legacy_prompt_attributes()
             
         except Exception as e:
-            import logging
-            logging.getLogger(__name__).warning(f"Failed to load prompt templates from {self.prompt_template_module}: {str(e)}")
+            logging.getLogger(__name__).warning(
+                f"Failed to load prompt templates from {self.prompt_template_module}: {str(e)}"
+            )
+    
+    def _update_legacy_prompt_attributes(self) -> None:
+        """Update legacy prompt attributes for backward compatibility."""
+        # Map of prompt registry names to legacy attribute names
+        legacy_mapping = {
+            'first_pass': 'first_pass_prompt',
+            'second_pass': 'second_pass_prompt',
+            'global_check': 'global_check_prompt',
+            'tagging': 'tagging_prompt',
+            'relationship': 'relationship_prompt'
+        }
+        
+        # For each mapping, try to get from registry and update attributes
+        for registry_name, attr_name in legacy_mapping.items():
+            try:
+                model = self.model if self.use_function_calling else None
+                template = self.prompt_registry.get(registry_name, model)
+                
+                # Set as direct attribute
+                setattr(self, attr_name, template.template)
+                
+                # Set uppercase version in prompts namespace
+                uppercase_name = attr_name.upper()
+                setattr(self.prompts, uppercase_name, template.template)
+                
+            except KeyError:
+                # Template not found in registry, ignore
+                pass
+    
+    def get_prompt(self, name: str, **kwargs) -> str:
+        """
+        Get a formatted prompt by name.
+        
+        Args:
+            name: Name of the prompt template
+            **kwargs: Parameters to format the prompt with
+            
+        Returns:
+            Formatted prompt string
+        """
+        model = self.model if self.use_function_calling else None
+        
+        try:
+            # Try to get from the prompt registry first
+            return self.prompt_registry.format(name, model=model, **kwargs)
+        except KeyError:
+            # Fallback to legacy prompt access
+            attr_name = f"{name}_prompt"
+            if hasattr(self, attr_name) and getattr(self, attr_name):
+                template = getattr(self, attr_name)
+                
+                # Very basic template formatting
+                for key, value in kwargs.items():
+                    placeholder = "{" + key + "}"
+                    template = template.replace(placeholder, str(value))
+                
+                return template
+            
+            # If still not found, raise error
+            raise ValueError(f"Prompt template '{name}' not found")
     
     def to_dict(self) -> Dict[str, Any]:
         """Convert config to dictionary for serialization."""
