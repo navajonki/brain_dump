@@ -215,122 +215,153 @@ class AtomicChunker:
 
     def _clean_json_string(self, json_str: str) -> str:
         """
-        Clean a JSON string to make it more parseable.
+        Clean a JSON string to make it more parseable using a streamlined approach.
         
-        Enhanced to better handle explanatory text before/after JSON content.
+        Efficiently extracts and repairs JSON structures from LLM responses.
         """
         if not isinstance(json_str, str):
             return json_str
-            
-        # Remove any leading/trailing whitespace
-        json_str = json_str.strip()
         
-        # Log the input for debugging
+        # Log input for debugging (truncated)
         self.logger.debug(f"Cleaning JSON string: {json_str[:100]}...")
         
-        # Use more robust pattern matching to find JSON content
-        # Look for patterns like "Here's the JSON:" or "The extracted facts are:"
-        explanatory_patterns = [
-            r'here(?:\'s| is) the (?:json|response|result|output|facts)[:;]',
-            r'the (?:extracted |identified |following )?(?:json|facts|response|result|output) (?:is|are)[:;]',
-            r'(?:json|response|result|output|facts)[:;]',
-            r'i\'ll format (?:it|this|the facts|the response) as json[:;]',
-            r'formatted as requested[:;]'
-        ]
+        # Try direct parsing first for already valid JSON
+        try:
+            json.loads(json_str)
+            return json_str  # Already valid JSON
+        except json.JSONDecodeError:
+            pass  # Continue with cleaning
         
-        # Try to find explanatory text and remove it
-        for pattern in explanatory_patterns:
-            match = re.search(pattern, json_str.lower())
-            if match:
-                start_idx = match.end()
-                json_str = json_str[start_idx:].strip()
-                self.logger.debug(f"Removed explanatory text using pattern: {pattern}")
-                break
-                
-        # Try to find the first { or [ and last } or ]
-        first_brace = min((pos for pos in (json_str.find('{'), json_str.find('[')) if pos != -1), default=-1)
-        last_brace = max((pos for pos in (json_str.rfind('}'), json_str.rfind(']')) if pos != -1), default=-1)
+        # Find the first { or [ and the last } or ]
+        start_indices = [json_str.find(c) for c in "{[" if json_str.find(c) != -1]
+        end_indices = [json_str.rfind(c) for c in "}]" if json_str.rfind(c) != -1]
         
-        if first_brace != -1 and last_brace != -1:
-            json_str = json_str[first_brace:last_brace + 1]
-            self.logger.debug(f"Extracted JSON content between braces: {json_str[:50]}...")
+        if start_indices and end_indices:
+            start_idx = min(start_indices)
+            end_idx = max(end_indices)
+            if start_idx < end_idx:
+                json_str = json_str[start_idx:end_idx+1]
+                self.logger.debug(f"Extracted potential JSON: {json_str[:50]}...")
         
-        # Look for trailing explanatory text that might follow the JSON
-        # For example: "... } I hope this JSON is what you need"
-        if json_str.endswith('}') or json_str.endswith(']'):
-            # Already clean at the end
-            pass
-        else:
-            # Try to find the last valid closing brace
-            last_close_brace = max(json_str.rfind('}'), json_str.rfind(']'))
-            if last_close_brace != -1:
-                json_str = json_str[:last_close_brace + 1]
-                self.logger.debug(f"Trimmed trailing text after JSON")
+        # Apply essential fixes
+        # 1. Remove control characters and non-printable characters
+        json_str = re.sub(r'[\x00-\x1F\x7F-\x9F]', '', json_str)
         
-        # Remove any non-JSON content
-        original_length = len(json_str)
-        json_str = re.sub(r'[^\[\]{}",:\s\w._\-#&\'%+*!@()$]', '', json_str)
-        if len(json_str) != original_length:
-            self.logger.debug(f"Removed {original_length - len(json_str)} non-JSON characters")
+        # 2. Fix trailing commas before closing brackets/braces
+        json_str = re.sub(r',(\s*[}\]])', r'\1', json_str)
         
-        # Fix common JSON formatting issues
-        json_str = re.sub(r',(\s*[}\]])', r'\1', json_str)  # Remove trailing commas
-        json_str = re.sub(r'([{\[]\s*),', r'\1', json_str)  # Remove leading commas
-        json_str = re.sub(r',\s*,', ',', json_str)  # Remove duplicate commas
-        json_str = re.sub(r'}\s*{', '},{', json_str)  # Fix adjacent objects
-        json_str = re.sub(r']\s*\[', '],[', json_str)  # Fix adjacent arrays
-        
-        # Check for and fix missing or unbalanced quotes
-        open_quotes_count = json_str.count('"')
-        if open_quotes_count % 2 != 0:
-            self.logger.debug(f"Detected unbalanced quotes: {open_quotes_count} quote characters")
-            
-        # Fix unescaped quotes in strings
-        json_str = re.sub(r'(?<!\\)"(?=(?:[^"\\]|\\.)*"(?:[^"\\]|\\.)*$)', '\\"', json_str)
-        
-        # Fix missing quotes around property names
+        # 3. Fix missing quotes around property names
         json_str = re.sub(r'(\{|\,)\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*:', r'\1"\2":', json_str)
         
-        # Add missing quotes around string values
+        # 4. Fix missing quotes around string values
         json_str = re.sub(r':\s*([a-zA-Z][a-zA-Z0-9_]*)\s*([,}])', r':"\1"\2', json_str)
         
-        # Check for balanced braces/brackets
-        counts = {'[': 0, ']': 0, '{': 0, '}': 0}
-        for char in json_str:
-            if char in counts:
-                counts[char] += 1
-                
-        if counts['['] != counts[']'] or counts['{'] != counts['}']:
-            self.logger.warning(f"Unbalanced braces/brackets after cleaning: {counts}")
-            
-            # Try to balance by removing excess closing braces/brackets at the end
-            excess_closing = counts['}'] - counts['{']
-            if excess_closing > 0:
-                # Remove excess closing braces
-                for _ in range(excess_closing):
-                    last_idx = json_str.rfind('}')
-                    if last_idx != -1:
-                        json_str = json_str[:last_idx] + json_str[last_idx+1:]
-                        
-            excess_closing = counts[']'] - counts['[']
-            if excess_closing > 0:
-                # Remove excess closing brackets
-                for _ in range(excess_closing):
-                    last_idx = json_str.rfind(']')
-                    if last_idx != -1:
-                        json_str = json_str[:last_idx] + json_str[last_idx+1:]
-                        
-            # Try to balance by adding missing closing braces/brackets
-            missing_closing = counts['{'] - counts['}']
-            if missing_closing > 0:
-                json_str += '}' * missing_closing
-                
-            missing_closing = counts['['] - counts[']']
-            if missing_closing > 0:
-                json_str += ']' * missing_closing
+        # 5. Fix unclosed quotes in strings 
+        # This regex finds unclosed quotes in array elements (a common issue)
+        json_str = re.sub(r'(:\s*\[\s*\".+?)(?=,\s*\])', r'\1"', json_str)
         
-        self.logger.debug(f"Cleaned JSON string: {json_str[:100]}...")
-        return json_str
+        # Check balance of braces and fix
+        opening_to_closing = {'{': '}', '[': ']'}
+        stack = []
+        fixed_str = ""
+        
+        # First-pass balance check with stack-based approach
+        for char in json_str:
+            if char in '{[':
+                stack.append(char)
+                fixed_str += char
+            elif char in '}]':
+                # Check if this is a valid closing bracket
+                if stack and opening_to_closing[stack[-1]] == char:
+                    stack.pop()
+                    fixed_str += char
+                else:
+                    # Skip invalid closing bracket
+                    continue
+            else:
+                fixed_str += char
+                
+        # Add any missing closing brackets/braces
+        while stack:
+            opener = stack.pop()
+            fixed_str += opening_to_closing[opener]
+            self.logger.debug(f"Added missing closing {opening_to_closing[opener]}")
+        
+        json_str = fixed_str
+        
+        # Try to parse with our fixed JSON
+        try:
+            json.loads(json_str)
+            self.logger.debug("JSON successfully fixed and validated")
+            return json_str
+        except json.JSONDecodeError as e:
+            self.logger.debug(f"JSON still invalid after cleanup: {str(e)}")
+            
+            # Advanced fix for mismatched quotes in nested structures
+            # Look for any unbalanced quotes
+            try:
+                # Count quotes outside of string literals
+                in_string = False
+                escape_next = False
+                quotes = []
+                
+                for i, char in enumerate(json_str):
+                    if char == '\\' and not escape_next:
+                        escape_next = True
+                        continue
+                    
+                    if char == '"' and not escape_next:
+                        if not in_string:
+                            in_string = True
+                            quotes.append(i)  # Record opening quote position
+                        else:
+                            in_string = False
+                            if quotes:  # Remove matched opening quote
+                                quotes.pop()
+                    
+                    escape_next = False
+                
+                # Fix unbalanced quotes by adding missing quotes
+                if quotes:
+                    for pos in quotes:
+                        # Add closing quote at a reasonable position
+                        # Look for a comma, brace or bracket after the opening quote
+                        end_pos = json_str.find(',', pos)
+                        if end_pos == -1:
+                            end_pos = min(pos + 50, len(json_str))  # Limit to 50 chars
+                        
+                        json_str = json_str[:end_pos] + '"' + json_str[end_pos:]
+                        self.logger.debug(f"Added missing quote at position {end_pos}")
+            
+            except Exception as quote_error:
+                self.logger.debug(f"Error fixing quotes: {str(quote_error)}")
+            
+            # Try again after quote fixes
+            try:
+                json.loads(json_str)
+                return json_str
+            except json.JSONDecodeError:
+                # More aggressive cleanup
+                json_str = re.sub(r'[^\[\]{}",:\s\w._\-#&\'%+*!@()$]', '', json_str)
+                
+                # Replace any malformed "key": [incomplete... with proper array
+                json_str = re.sub(r'"\w+":\s*\[\s*[^]]*(?!\])', r'":[]', json_str)
+                
+                # Try one final time
+                try:
+                    json.loads(json_str) 
+                    return json_str
+                except json.JSONDecodeError:
+                    # Last resort: create a minimum valid JSON
+                    if json_str.startswith('{'):
+                        self.logger.warning("Creating minimum valid JSON object")
+                        return "{}"
+                    elif json_str.startswith('['):
+                        self.logger.warning("Creating minimum valid JSON array")
+                        return "[]"
+                    else:
+                        self.logger.warning("Failed to repair JSON, returning minimal valid JSON")
+                        return "{}"
     
     def _split_text_into_windows(self, text: str) -> List[Tuple[str, int, int]]:
         """
