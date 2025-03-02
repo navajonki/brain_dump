@@ -66,3 +66,47 @@ prompt = config.get_prompt('first_pass', window_text='...')
 - From YAML config: Define fields like `first_pass_prompt` in your YAML
 - From module: Configure `prompt_template_module` in your config
 - From registry: Use `template_registry.register()` in your code
+
+## Batch Processing
+
+The system supports batch processing for tagging facts to improve efficiency with LLM calls:
+
+```python
+# Configuration settings
+config = ChunkingConfig(
+    tagging_batch_enabled=True,     # Enable/disable batch processing (default: True)
+    tagging_batch_max_tokens=4000,  # Max tokens per batch (adjust for model context size)
+)
+```
+
+This feature:
+- Automatically batches facts based on token count
+- Adapts to different model context sizes
+- Reduces API calls and costs
+- Ensures proper handling of various response formats
+
+## Response Parsing
+
+The system uses a robust response parsing framework based on Pydantic schemas:
+
+```python
+from core.chunking.parsers import ResponseParserFactory, JSONParser
+
+# Get a specialized parser for a specific response type
+parser = ResponseParserFactory.get_first_pass_parser()
+
+# Parse a response
+parsed_data = parser.parse(llm_response)
+
+# Or use the parser directly from TextChunker
+chunker = TextChunker(config)
+parsed_data = chunker._parse_response(response, 'first_pass')
+```
+
+Key features:
+- Schema validation with Pydantic models
+- Robust JSON cleaning and normalization
+- Specialized parsers for different response types
+- Graceful degradation with fallback strategies
+
+See the [response parsing documentation](docs/response_parsing.md) for more details.

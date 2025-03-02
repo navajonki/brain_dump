@@ -1,0 +1,11 @@
+Here are the facts I could extract:
+
+- The Zettelkasten Method is a personal knowledge management system developed by German sociologist Niklas Luhmann
+- Luhmann published more than 70 books and nearly 400 scholarly articles
+- He credited his productivity to his "slip-box" or Zettelkasten system
+- The core principle is to create atomic notes, each containing a single idea
+- These notes are linked together to form a network of knowledge
+- This approach differs from traditional hierarchical note-taking
+- Luhmann's system was analog, using paper cards in wooden boxes
+- Each card had a unique identifier and cross-references to other cards
+- Modern implementations use software like Obsidian, Roam Research, and Notion

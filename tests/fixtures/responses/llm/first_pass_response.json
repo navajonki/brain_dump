@@ -1,0 +1,37 @@
+[
+  {
+    "text": "The Zettelkasten Method is a personal knowledge management system developed by German sociologist Niklas Luhmann.",
+    "confidence": 0.95,
+    "source": "extraction",
+    "temporal_info": "",
+    "entities": ["Zettelkasten Method", "Niklas Luhmann", "German sociologist"]
+  },
+  {
+    "text": "Niklas Luhmann published more than 70 books and nearly 400 scholarly articles on various subjects.",
+    "confidence": 0.92,
+    "source": "extraction",
+    "temporal_info": "",
+    "entities": ["Niklas Luhmann", "70 books", "400 scholarly articles"]
+  },
+  {
+    "text": "Luhmann credited his productivity to his 'slip-box' or Zettelkasten system.",
+    "confidence": 0.9,
+    "source": "extraction",
+    "temporal_info": "",
+    "entities": ["Luhmann", "slip-box", "Zettelkasten system"]
+  },
+  {
+    "text": "The core principle of the Zettelkasten method is to create atomic notes, each containing a single idea.",
+    "confidence": 0.93,
+    "source": "extraction",
+    "temporal_info": "",
+    "entities": ["Zettelkasten method", "atomic notes"]
+  },
+  {
+    "text": "Atomic notes in the Zettelkasten method are linked together to form a network of knowledge.",
+    "confidence": 0.88,
+    "source": "extraction",
+    "temporal_info": "",
+    "entities": ["atomic notes", "Zettelkasten method", "network of knowledge"]
+  }
+]

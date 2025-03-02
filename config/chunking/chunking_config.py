@@ -21,10 +21,17 @@ class ChunkingConfig:
         # Feature flags
         self.use_function_calling = kwargs.get('use_function_calling', False)
         self.validate_function_output = kwargs.get('validate_function_output', False)
+        self.first_pass_enabled = kwargs.get('first_pass_enabled', True)
+        self.second_pass_enabled = kwargs.get('second_pass_enabled', True)
         self.global_check_enabled = kwargs.get('global_check_enabled', True)
         self.tagging_enabled = kwargs.get('tagging_enabled', True)
-        self.relationships_enabled = kwargs.get('relationships_enabled', True)
+        self.relationship_analysis_enabled = kwargs.get('relationship_analysis_enabled', True)
+        self.use_global_relationship_analysis = kwargs.get('use_global_relationship_analysis', True)
         self.track_transcript_positions = kwargs.get('track_transcript_positions', True)
+        
+        # Tagging batch settings
+        self.tagging_batch_enabled = kwargs.get('tagging_batch_enabled', True)
+        self.tagging_batch_max_tokens = kwargs.get('tagging_batch_max_tokens', 4000)
         
         # Initialize the prompt registry
         self.prompt_registry = template_registry

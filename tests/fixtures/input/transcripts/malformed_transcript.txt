@@ -1,0 +1,32 @@
+Partial sentence without proper
+
+Bullet points with no context:
+• First item
+• Second item with [brackets] and {curly braces}
+• Third item with "quotes" and 'apostrophes'
+
+JSON-like text that isn't valid JSON:
+{
+  "key": "value",
+  another_key: "another value",
+  "broken_array": [1, 2, 3,
+}
+
+Sentences with unusual  multiple    spacing and line
+breaks in the middle of
+
+Sentences with special characters: é, ñ, ç, ß, 漢字, ‡, §, ¢.
+
+1. Numbered list
+2. With some items
+3. That might be confused as enumerations
+
+Code-like blocks:
+```python
+def hello_world():
+    print("Hello, world!")
+```
+
+<html>
+  <p>HTML-like tags that might confuse parsers</p>
+</html>

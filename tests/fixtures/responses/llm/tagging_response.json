@@ -1,0 +1,12 @@
+{
+  "tags": ["knowledge management", "note-taking", "productivity", "academic", "system"],
+  "topics": ["Zettelkasten method", "knowledge organization", "personal knowledge management"],
+  "entities": {
+    "people": ["Niklas Luhmann"],
+    "places": ["Germany"],
+    "organizations": [],
+    "other": ["Zettelkasten Method", "slip-box"]
+  },
+  "sentiment": "positive",
+  "importance": 8
+}

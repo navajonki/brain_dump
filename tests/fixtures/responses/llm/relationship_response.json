@@ -1,0 +1,28 @@
+{
+  "relationships": [
+    {
+      "fact_idx": 0,
+      "related_fact_idx": 1,
+      "relationship_type": "elaborates",
+      "confidence": 0.85
+    },
+    {
+      "fact_idx": 0,
+      "related_fact_idx": 2,
+      "relationship_type": "supports",
+      "confidence": 0.75
+    },
+    {
+      "fact_idx": 3,
+      "related_fact_idx": 4,
+      "relationship_type": "elaborates",
+      "confidence": 0.9
+    },
+    {
+      "fact_idx": 2,
+      "related_fact_idx": 3,
+      "relationship_type": "leads_to",
+      "confidence": 0.65
+    }
+  ]
+}

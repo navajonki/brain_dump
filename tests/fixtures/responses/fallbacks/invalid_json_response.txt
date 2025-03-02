@@ -1,0 +1,20 @@
+[
+  {
+    "text": "The Zettelkasten Method is a personal knowledge management system",
+    "confidence": 0.9,
+    "source": "extraction",
+    "entities": ["Zettelkasten Method", "knowledge management"]
+  },
+  {
+    "text": "Niklas Luhmann developed the Zettelkasten Method",
+    "confidence": 0.95,
+    "source": "extraction",
+    "entities": ["Niklas Luhmann", "Zettelkasten Method"
+  },
+  {
+    "text": "Luhmann published more than 70 books and nearly 400 scholarly articles",
+    "confidence": 0.85
+    "source": "extraction",
+    "entities": ["Luhmann", "70 books", "400 scholarly articles"]
+  }
+]

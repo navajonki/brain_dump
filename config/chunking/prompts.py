@@ -1,6 +1,7 @@
 """
-Prompt templates for the atomic chunking process.
-These prompts are used by the AtomicChunker to extract atomic facts from transcripts.
+Default prompts for chunking operations.
+
+This module contains the default prompts used by the chunking system.
 """
 
 # First pass prompt to extract atomic facts from a window
@@ -97,6 +98,55 @@ RELATIONSHIP_PROMPT = """Here is a set of atomic facts extracted from a transcri
 Please analyze these facts and identify relationships between them. For each fact, identify which other facts are directly related to it.
 
 Format your response as a JSON object where each key is the index of a fact (starting from 1), and the value is an array of indices of related facts:
+"""
+
+# Batch tagging prompt for tagging multiple facts at once
+BATCH_TAGGING_PROMPT = """Here are multiple atomic facts extracted from a transcript:
+
+{facts}
+
+Please analyze EACH fact and provide the following for EACH one:
+1. Identify 3-5 relevant tags that categorize the information (e.g., "personal_history", "education", "career", "family", "opinion", etc.)
+2. Determine the main topic each fact relates to
+3. Identify any entities mentioned (people, places, organizations, etc.)
+4. Assess the sentiment (positive, negative, or neutral)
+5. Rate the importance on a scale of 1-10 (where 10 is extremely important)
+
+Format your response as a JSON object with the following structure:
+
+{
+  "fact_tags": {
+    "1": {
+      "tags": ["tag1", "tag2", "tag3"],
+      "topics": ["main_topic"],
+      "entities": {
+        "people": ["name1", "name2"],
+        "places": ["place1", "place2"],
+        "organizations": ["org1", "org2"],
+        "other": ["entity1", "entity2"]
+      },
+      "sentiment": "positive/negative/neutral",
+      "importance": 7
+    },
+    "2": {
+      "tags": ["tag1", "tag2", "tag3"],
+      "topics": ["main_topic"],
+      "entities": {
+        "people": ["name1", "name2"],
+        "places": ["place1", "place2"],
+        "organizations": ["org1", "org2"],
+        "other": ["entity1", "entity2"]
+      },
+      "sentiment": "positive/negative/neutral",
+      "importance": 5
+    },
+    // ... and so on for each fact
+  }
+}
+
+Where the keys "1", "2", etc. correspond to the fact numbers in the list above.
+IMPORTANT: Make sure to include an entry for EACH fact in the input list.
+"""
 
 {{
   "1": [3, 5, 8],

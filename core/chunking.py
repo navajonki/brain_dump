@@ -4,12 +4,18 @@ Chunking module for processing text into atomic information units.
 This module provides classes for splitting text into atomic chunks based on 
 semantic content rather than just token counts. It uses a sliding window approach
 with multiple processing passes to ensure complete and accurate information extraction.
+
+Note: This file is maintained for backward compatibility.
+The main implementation has been moved to core.chunking.text_chunker.
+New code should import from core.chunking instead.
 """
 
+from core.chunking import TextChunker
+
+# For backward compatibility with existing code
 from typing import List, Dict, Any, Optional, Tuple
 import tiktoken
 import re
-import openai
 import time
 import requests
 from pathlib import Path
@@ -17,20 +23,13 @@ from datetime import datetime, timedelta
 import json
 import os
 import sys
-from dotenv import load_dotenv
 from utils.logging import get_logger
 from utils.file_ops import OutputManager
 from config.chunking.chunking_config import ChunkingConfig
-# Using prompt registry instead of direct imports
-import jsonschema
-from core.llm_backends import create_llm_backend
-import uuid
-import logging
 
-# Load environment variables
-load_dotenv()
-
-class TextChunker:
+# This class definition is maintained for backward compatibility
+# but just inherits from the new implementation
+class TextChunker(TextChunker):
     """
     A chunker that extracts atomic units of information from transcripts
     using a sliding window approach with multiple passes.

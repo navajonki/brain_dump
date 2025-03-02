@@ -1,0 +1,19 @@
+[
+  {
+    "text": "Fact 1: The Zettelkasten Method is a personal knowledge management system."
+  },
+  "Niklas Luhmann published many books and articles.",
+  {
+    "confidence": 0.8,
+    "text": "This system helped with productivity.",
+    "irrelevant_field": "This should be ignored"
+  },
+  "The principle is to create atomic notes - each containing a single idea",
+  {
+    "not_text_field": "This is in the wrong field",
+    "confidence": 0.7
+  },
+  null,
+  42,
+  ""
+]

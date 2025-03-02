@@ -1,0 +1,10 @@
+model: "test-model"
+window_size: 1000
+overlap_size: 200
+first_pass_enabled: true
+second_pass_enabled: false
+tagging_enabled: false
+relationship_analysis_enabled: false
+global_check_enabled: false
+max_facts_per_window: 10
+output_dir: "output/test_basic"

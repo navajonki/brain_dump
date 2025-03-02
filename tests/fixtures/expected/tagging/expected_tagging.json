@@ -1,0 +1,25 @@
+{
+  "original_fact": {
+    "text": "The Zettelkasten Method is a personal knowledge management system developed by German sociologist Niklas Luhmann.",
+    "confidence": 0.95,
+    "source": "extraction",
+    "temporal_info": "",
+    "entities": ["Zettelkasten Method", "Niklas Luhmann", "German sociologist"]
+  },
+  "tagged_fact": {
+    "text": "The Zettelkasten Method is a personal knowledge management system developed by German sociologist Niklas Luhmann.",
+    "confidence": 0.95,
+    "source": "extraction",
+    "temporal_info": "",
+    "entities": {
+      "people": ["Niklas Luhmann"],
+      "places": ["Germany"],
+      "organizations": [],
+      "other": ["Zettelkasten Method"]
+    },
+    "tags": ["knowledge management", "note-taking", "personal knowledge management", "productivity", "zettelkasten"],
+    "topics": ["Knowledge Management Systems", "Academic Methodologies"],
+    "sentiment": "neutral",
+    "importance": 8
+  }
+}

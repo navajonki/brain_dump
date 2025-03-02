@@ -1,0 +1,15 @@
+model: "test-model"
+window_size: 1000
+overlap_size: 200
+first_pass_enabled: true
+second_pass_enabled: true
+tagging_enabled: true
+relationship_analysis_enabled: true
+global_check_enabled: true
+max_facts_per_window: 15
+output_dir: "output/test_full"
+first_pass_prompt: "Extract all atomic, self-contained facts from the text below.\n\n{window_text}\n\nReturn the facts as a JSON array of objects with 'text', 'confidence', 'source', 'temporal_info', and 'entities' fields."
+second_pass_prompt: "Improve and make more atomic the following facts:\n\n{facts}\n\nOriginal text for context:\n{window_text}\n\nReturn a JSON array of improved fact objects."
+tagging_prompt: "Analyze this fact: {fact_text}\n\nIdentify relevant tags, topics, entities, sentiment, and importance score (1-10).\n\nReturn a JSON object with these fields."
+relationship_prompt: "Analyze the relationships between these facts:\n\n{facts}\n\nIdentify which facts support, contradict, or elaborate on others.\n\nReturn a JSON object with a 'relationships' array."
+global_check_prompt: "Review these facts for redundancies, contradictions, and timeline issues:\n\n{all_facts}\n\nReturn a JSON object with a 'changes' field containing arrays of suggested changes."

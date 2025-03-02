@@ -1,0 +1,14 @@
+{
+  "changes": {
+    "redundancies": [
+      {"fact_idx": 7}
+    ],
+    "contradictions": [
+      {
+        "fact_idx": 3,
+        "correction": "The Zettelkasten method requires creating atomic notes, each containing exactly one self-contained idea, rather than multiple related ideas in one note."
+      }
+    ],
+    "timeline_issues": []
+  }
+}
