@@ -242,6 +242,8 @@ Format your response as a JSON array of fact objects, each with:
 - text: The fact itself as a complete sentence
 - confidence: Your confidence in the fact (0.0-1.0)
 - entities: An array of named entities mentioned
+- tags: An array of relevant tags (3-5 keywords that categorize this fact)
+- topics: An array of broader topics this fact relates to (1-2 general subjects)
 
 RESPONSE (JSON format):
 """
@@ -267,7 +269,7 @@ RESPONSE (JSON format):
             "meta/meta-llama-3-8b-instruct",
             input={
                 "prompt": prompt,
-                "system_prompt": "You are a helpful AI assistant that extracts factual information from text. You analyze text carefully and identify individual, atomic facts. Always output in valid JSON format.",
+                "system_prompt": "You are a helpful AI assistant that extracts factual information from text. You analyze text carefully and identify individual, atomic facts. You also tag and categorize each fact appropriately. Always output in valid JSON format.",
                 "temperature": 0.1,  # Low temperature for factual extraction
                 "top_p": 0.9,
                 "max_tokens": 2000
@@ -346,6 +348,8 @@ RESPONSE (JSON format):
                 "source": "llama3-8b",
                 "temporal_info": fact_data.get("temporal_info", ""),
                 "entities": fact_data["entities"],
+                "tags": fact_data.get("tags", []),
+                "topics": fact_data.get("topics", []),
                 "parent_window": window_id
             }
             
@@ -363,6 +367,10 @@ RESPONSE (JSON format):
                 f.write(f"parent_window: {window_id}\n")
                 f.write(f"confidence: {fact['confidence']}\n")
                 f.write(f"source: llama3-8b\n")
+                if fact['tags']:
+                    f.write(f"tags: {', '.join(fact['tags'])}\n")
+                if fact['topics']:
+                    f.write(f"topics: {', '.join(fact['topics'])}\n")
                 f.write(f"---\n\n")
                 f.write(f"# {fact_id}\n\n")
                 f.write(f"## Content\n\n")
@@ -371,6 +379,14 @@ RESPONSE (JSON format):
                     f.write(f"## Entities\n\n")
                     for entity in fact['entities']:
                         f.write(f"- {entity}\n")
+                if fact['tags']:
+                    f.write(f"\n## Tags\n\n")
+                    for tag in fact['tags']:
+                        f.write(f"- {tag}\n")
+                if fact['topics']:
+                    f.write(f"\n## Topics\n\n")
+                    for topic in fact['topics']:
+                        f.write(f"- {topic}\n")
         
         # Write all facts from this window to a consolidated file
         with open(FACTS_DIR / f"{window_id}_facts.json", "w") as f:
