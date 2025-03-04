@@ -166,21 +166,66 @@ def create_windows(
         
         # Find sentences that fall within this window
         window_sentences = []
+        window_sentence_data = []
         
         for sent_data in sentence_data:
             # Check if this sentence overlaps with the current window
             if (sent_data["start_token"] < window_end and 
                 sent_data["end_token"] > window_start):
                 window_sentences.append(sent_data["text"])
+                window_sentence_data.append(sent_data)
         
         # Combine sentences into a window
         window_text = " ".join(window_sentences)
         
+        # Extract timestamp information if available and link to sentences
+        window_timestamps = {}
+        current_timestamp = None
+        
+        # First pass: Extract all timestamps
+        for i, sent_data in enumerate(window_sentence_data):
+            # Check if the text has timestamp information in the format [12.34 - 56.78]
+            timestamp_match = re.search(r'\[(\d+\.\d+)\s*-\s*(\d+\.\d+)\]', sent_data["text"])
+            if timestamp_match:
+                start_time = float(timestamp_match.group(1))
+                end_time = float(timestamp_match.group(2))
+                
+                # Remove timestamp from the text
+                clean_text = re.sub(r'\[\d+\.\d+\s*-\s*\d+\.\d+\]\s*', '', sent_data["text"]).strip()
+                
+                # Store the current timestamp
+                current_timestamp = {
+                    "start": start_time,
+                    "end": end_time,
+                    "text": clean_text
+                }
+                
+                # Store in our timestamps dictionary
+                window_timestamps[i] = current_timestamp
+        
+        # Second pass: Assign timestamps to sentences without explicit timestamps
+        last_timestamp_idx = None
+        for i, sent_data in enumerate(window_sentence_data):
+            if i in window_timestamps:
+                # Already has a timestamp
+                last_timestamp_idx = i
+            elif last_timestamp_idx is not None:
+                # Inherit timestamp from the previous sentence with a timestamp
+                prev_timestamp = window_timestamps[last_timestamp_idx]
+                window_timestamps[i] = {
+                    "start": prev_timestamp["start"],
+                    "end": prev_timestamp["end"],
+                    "text": sent_data["text"]
+                }
+        
+        # Print info about timestamps
+        log_message(f"Found {len(window_timestamps)} sentences with timestamp information")
+        
         # Generate window ID
         window_id = f"window_{len(windows) + 1:03d}"
         
-        # Add window to list
-        windows.append((window_text, window_start, window_end, window_id))
+        # Add window to list with timestamp data
+        windows.append((window_text, window_start, window_end, window_id, window_timestamps))
         
         # Store window info for logging
         window_data = {
@@ -211,7 +256,7 @@ def create_windows(
     return windows
 
 
-def extract_facts_with_llama(window_text: str, window_id: str) -> List[Dict[str, Any]]:
+def extract_facts_with_llama(window_text: str, window_id: str, timestamps: Dict[int, Dict[str, Any]]) -> List[Dict[str, Any]]:
     """
     Extract facts using Llama models on Replicate.
     """
@@ -340,17 +385,55 @@ RESPONSE (JSON format):
                 # Extract potential entities (capitalized words)
                 fact_data["entities"] = re.findall(r'\b[A-Z][a-z]+\b', fact_data["text"])
                 
+            # Try to find the timestamp for this fact by matching text
+            fact_text = fact_data["text"].strip()
+            timestamp_info = None
+            best_match_score = 0
+            
+            # Look through all timestamp data to find the best match
+            for sent_idx, ts_data in timestamps.items():
+                # Use a more sophisticated matching approach
+                # 1. Direct string containment
+                if fact_text in ts_data["text"] or ts_data["text"] in fact_text:
+                    match_score = 100  # High score for direct containment
+                else:
+                    # 2. Word-level similarity for partial matches
+                    fact_words = set(fact_text.lower().split())
+                    ts_words = set(ts_data["text"].lower().split())
+                    common_words = fact_words.intersection(ts_words)
+                    
+                    if common_words:
+                        # Calculate a similarity score based on shared words
+                        match_score = len(common_words) / max(len(fact_words), len(ts_words)) * 90
+                    else:
+                        match_score = 0
+                
+                # Update best match if this is better
+                if match_score > best_match_score:
+                    best_match_score = match_score
+                    timestamp_info = {
+                        "start_time": ts_data["start"],
+                        "end_time": ts_data["end"],
+                        "transcript_text": ts_data["text"],
+                        "match_score": match_score
+                    }
+            
+            # Only use timestamp if match score is reasonable
+            if best_match_score < 30:  # Threshold for accepting a match
+                timestamp_info = None
+            
             # Create a standardized fact
             fact = {
                 "id": fact_id,
-                "text": fact_data["text"].strip(),
+                "text": fact_text,
                 "confidence": float(fact_data["confidence"]),
                 "source": "llama3-8b",
                 "temporal_info": fact_data.get("temporal_info", ""),
                 "entities": fact_data["entities"],
                 "tags": fact_data.get("tags", []),
                 "topics": fact_data.get("topics", []),
-                "parent_window": window_id
+                "parent_window": window_id,
+                "timestamp": timestamp_info
             }
             
             facts.append(fact)
@@ -367,6 +450,12 @@ RESPONSE (JSON format):
                 f.write(f"parent_window: {window_id}\n")
                 f.write(f"confidence: {fact['confidence']}\n")
                 f.write(f"source: llama3-8b\n")
+                
+                # Add timestamp info if available
+                if fact['timestamp']:
+                    f.write(f"start_time: {fact['timestamp']['start_time']}\n")
+                    f.write(f"end_time: {fact['timestamp']['end_time']}\n")
+                
                 if fact['tags']:
                     f.write(f"tags: {', '.join(fact['tags'])}\n")
                 if fact['topics']:
@@ -379,10 +468,17 @@ RESPONSE (JSON format):
                     f.write(f"## Entities\n\n")
                     for entity in fact['entities']:
                         f.write(f"- {entity}\n")
+                
+                if fact['timestamp']:
+                    f.write(f"\n## Transcript Source\n\n")
+                    f.write(f"**Time Range:** {fact['timestamp']['start_time']} - {fact['timestamp']['end_time']} seconds\n\n")
+                    f.write(f"**Original Text:** {fact['timestamp']['transcript_text']}\n")
+                
                 if fact['tags']:
                     f.write(f"\n## Tags\n\n")
                     for tag in fact['tags']:
                         f.write(f"- {tag}\n")
+                
                 if fact['topics']:
                     f.write(f"\n## Topics\n\n")
                     for topic in fact['topics']:
@@ -479,11 +575,11 @@ def main():
     window_facts_map = {}
     
     # Process all windows - we have a working token now
-    for window_text, start_token, end_token, window_id in windows:
+    for window_text, start_token, end_token, window_id, timestamps in windows:
         log_message(f"Processing window {window_id}")
         
         # Extract facts
-        facts = extract_facts_with_llama(window_text, window_id)
+        facts = extract_facts_with_llama(window_text, window_id, timestamps)
         all_facts.extend(facts)
         window_facts_map[window_id] = [fact["id"] for fact in facts]
     
@@ -518,9 +614,10 @@ def main():
         f.write(f"- **Relationships Found:** {len(relationships)}\n\n")
         
         f.write(f"## Windows\n\n")
-        for window_text, start_token, end_token, window_id in windows:
+        for window_text, start_token, end_token, window_id, timestamps in windows:
             f.write(f"### {window_id}\n\n")
             f.write(f"- **Token Range:** {start_token}-{end_token} ({end_token-start_token} tokens)\n")
+            f.write(f"- **Timestamp Count:** {len(timestamps)} sentences with timestamps\n")
             if window_id in window_facts_map:
                 f.write(f"- **Facts:** {len(window_facts_map[window_id])}\n")
             else:
