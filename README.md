@@ -458,10 +458,31 @@ zettelkasten/
 
 - Enhanced real-time processing pipeline
 - Parallel processing for large documents
-- Web interface for browsing and querying chunks
+- Advanced web interface for browsing and querying chunks
 - Integration with Obsidian and other knowledge management tools
 - Support for more languages and audio formats
 - Stream-based processing for long recordings
+
+## Web Comparison Tool
+
+The project includes a web-based comparison tool for reviewing and comparing the results of different LLM pipeline runs:
+
+```bash
+# Install web dependencies
+pip install flask flask-wtf
+
+# Run the web app
+python webapp.py
+```
+
+Then visit http://127.0.0.1:5000 in your browser.
+
+Features:
+- Compare facts, relationships, and chunks side-by-side
+- Visualize relationship graphs
+- Find similar facts across different LLM runs
+- Review detailed metadata for each fact
+- Interactive navigation between related components
 
 ## License
 

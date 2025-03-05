@@ -1,12 +1,30 @@
 import os
 import json
 from pathlib import Path
-from typing import Optional, List, Dict
+from typing import Optional, List, Dict, Any
 from datetime import datetime
 import yaml
 import sys
 import inspect
 import uuid
+
+
+def load_json_file(file_path: str) -> Dict[str, Any]:
+    """
+    Load JSON data from a file.
+    
+    Args:
+        file_path: Path to the JSON file
+        
+    Returns:
+        Dictionary containing the JSON data
+        
+    Raises:
+        FileNotFoundError: If the file doesn't exist
+        json.JSONDecodeError: If the file contains invalid JSON
+    """
+    with open(file_path, 'r') as f:
+        return json.load(f)
 
 class OutputManager:
     """

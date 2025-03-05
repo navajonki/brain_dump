@@ -1,0 +1,351 @@
+{% extends "layout.html" %}
+
+{% block title %}Session Comparison{% endblock %}
+
+{% block head_extra %}
+<link href="https://cdn.jsdelivr.net/npm/vis-network@9.1.2/dist/dist/vis-network.min.css" rel="stylesheet">
+{% endblock %}
+
+{% block content %}
+<div class="container-fluid">
+    <div class="d-flex justify-content-between align-items-center mb-4">
+        <h2>Session Comparison</h2>
+        <div>
+            <a href="/compare" class="btn btn-outline-secondary">
+                &larr; New Comparison
+            </a>
+        </div>
+    </div>
+    
+    <ul class="nav nav-tabs mb-4" id="comparisonTab" role="tablist">
+        <li class="nav-item" role="presentation">
+            <button class="nav-link active" id="facts-tab" data-bs-toggle="tab" 
+                    data-bs-target="#facts-content" type="button" role="tab" 
+                    aria-controls="facts-content" aria-selected="true">
+                Facts
+            </button>
+        </li>
+        <li class="nav-item" role="presentation">
+            <button class="nav-link" id="relationships-tab" data-bs-toggle="tab" 
+                    data-bs-target="#relationships-content" type="button" role="tab" 
+                    aria-controls="relationships-content" aria-selected="false">
+                Relationships
+            </button>
+        </li>
+        <li class="nav-item" role="presentation">
+            <button class="nav-link" id="chunks-tab" data-bs-toggle="tab" 
+                    data-bs-target="#chunks-content" type="button" role="tab" 
+                    aria-controls="chunks-content" aria-selected="false">
+                Chunks
+            </button>
+        </li>
+    </ul>
+    
+    <div class="tab-content" id="comparisonTabContent">
+        <!-- Facts Tab -->
+        <div class="tab-pane fade show active" id="facts-content" role="tabpanel" aria-labelledby="facts-tab">
+            <div class="row">
+                {% for session_id, session_data in sessions.items() %}
+                <div class="col session-column">
+                    <div class="session-header mb-3">
+                        <h4>{{ session_id }}</h4>
+                        <p class="text-muted small">
+                            {{ session_data.facts|length }} facts found
+                        </p>
+                    </div>
+                    
+                    <div class="session-facts">
+                        {% for fact in session_data.facts %}
+                        <div class="card fact-card" id="{{ fact.id }}" data-fact-id="{{ fact.id }}">
+                            <div class="card-body fact-body">
+                                <p class="fact-text">{{ fact.text }}</p>
+                                
+                                {% if fact.entities %}
+                                <div class="fact-entities mb-2">
+                                    <strong>Entities:</strong>
+                                    {% for entity in fact.entities %}
+                                    <span class="tag">{{ entity }}</span>
+                                    {% endfor %}
+                                </div>
+                                {% endif %}
+                                
+                                {% if fact.topics %}
+                                <div class="fact-topics mb-2">
+                                    <strong>Topics:</strong>
+                                    {% for topic in fact.topics %}
+                                    <span class="tag">{{ topic }}</span>
+                                    {% endfor %}
+                                </div>
+                                {% endif %}
+                                
+                                {% if fact.tags %}
+                                <div class="fact-tags mb-2">
+                                    <strong>Tags:</strong>
+                                    {% for tag in fact.tags %}
+                                    <span class="tag">{{ tag }}</span>
+                                    {% endfor %}
+                                </div>
+                                {% endif %}
+                                
+                                <div class="fact-metadata">
+                                    <div><strong>ID:</strong> {{ fact.id }}</div>
+                                    <div><strong>Confidence:</strong> {{ fact.confidence }}</div>
+                                    <div><strong>Source:</strong> {{ fact.source }}</div>
+                                    <div><strong>Parent Chunk:</strong> {{ fact.parent_chunk }}</div>
+                                </div>
+                            </div>
+                        </div>
+                        {% else %}
+                        <div class="alert alert-warning">
+                            No facts found for this session.
+                        </div>
+                        {% endfor %}
+                    </div>
+                </div>
+                {% endfor %}
+            </div>
+        </div>
+        
+        <!-- Relationships Tab -->
+        <div class="tab-pane fade" id="relationships-content" role="tabpanel" aria-labelledby="relationships-tab">
+            <div class="row">
+                {% for session_id, session_data in sessions.items() %}
+                <div class="col">
+                    <div class="card mb-4">
+                        <div class="card-header">
+                            <h5>{{ session_id }}</h5>
+                        </div>
+                        <div class="card-body">
+                            {% if session_data.relationships %}
+                            <div id="network-{{ loop.index }}" class="relationship-map"></div>
+                            {% else %}
+                            <div class="alert alert-warning">
+                                No relationship data found for this session.
+                            </div>
+                            {% endif %}
+                        </div>
+                    </div>
+                </div>
+                {% endfor %}
+            </div>
+        </div>
+        
+        <!-- Chunks Tab -->
+        <div class="tab-pane fade" id="chunks-content" role="tabpanel" aria-labelledby="chunks-tab">
+            <div class="row">
+                {% for session_id, session_data in sessions.items() %}
+                <div class="col">
+                    <div class="card mb-4">
+                        <div class="card-header">
+                            <h5>{{ session_id }}</h5>
+                        </div>
+                        <div class="card-body">
+                            <div class="accordion" id="chunks-accordion-{{ loop.index }}">
+                                {% for chunk in session_data.chunks %}
+                                <div class="accordion-item">
+                                    <h2 class="accordion-header" id="heading-chunk-{{ loop.index }}-{{ loop.index0 }}">
+                                        <button class="accordion-button collapsed" type="button" 
+                                                data-bs-toggle="collapse" data-bs-target="#collapse-chunk-{{ loop.index }}-{{ loop.index0 }}" 
+                                                aria-expanded="false" aria-controls="collapse-chunk-{{ loop.index }}-{{ loop.index0 }}">
+                                            {{ chunk.id | default('Chunk ' + loop.index0|string) }}
+                                        </button>
+                                    </h2>
+                                    <div id="collapse-chunk-{{ loop.index }}-{{ loop.index0 }}" class="accordion-collapse collapse" 
+                                         aria-labelledby="heading-chunk-{{ loop.index }}-{{ loop.index0 }}">
+                                        <div class="accordion-body">
+                                            <p><strong>Content:</strong></p>
+                                            <pre class="chunk-content">{{ chunk.content | default(chunk.text) }}</pre>
+                                            
+                                            {% if chunk.facts_ids %}
+                                            <p><strong>Contained Facts:</strong></p>
+                                            <ul>
+                                                {% for fact_id in chunk.facts_ids %}
+                                                <li>{{ fact_id }}</li>
+                                                {% endfor %}
+                                            </ul>
+                                            {% endif %}
+                                        </div>
+                                    </div>
+                                </div>
+                                {% else %}
+                                <div class="alert alert-warning">
+                                    No chunks found for this session.
+                                </div>
+                                {% endfor %}
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                {% endfor %}
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="https://cdn.jsdelivr.net/npm/vis-network@9.1.2/dist/dist/vis-network.min.js"></script>
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    // Initialize relationship network visualizations
+    {% for session_id, session_data in sessions.items() %}
+    {% if session_data.relationships %}
+    initNetworkGraph('network-{{ loop.index }}', {{ session_data.relationships|tojson }}, {{ session_data.facts|tojson }});
+    {% endif %}
+    {% endfor %}
+    
+    // Add functionality to highlight similar facts
+    const factCards = document.querySelectorAll('.fact-card');
+    factCards.forEach(card => {
+        card.addEventListener('mouseover', function() {
+            const factText = this.querySelector('.fact-text').textContent.toLowerCase();
+            
+            // Find similar facts in other sessions
+            factCards.forEach(otherCard => {
+                if (otherCard !== card) {
+                    const otherText = otherCard.querySelector('.fact-text').textContent.toLowerCase();
+                    
+                    // Simple similarity check - if there's significant overlap
+                    if (calculateSimilarity(factText, otherText) > 0.5) {
+                        otherCard.classList.add('highlight');
+                    }
+                }
+            });
+        });
+        
+        card.addEventListener('mouseout', function() {
+            factCards.forEach(otherCard => {
+                otherCard.classList.remove('highlight');
+            });
+        });
+    });
+});
+
+// Simple text similarity function using words overlap
+function calculateSimilarity(text1, text2) {
+    const words1 = new Set(text1.split(/\s+/).filter(w => w.length > 3));
+    const words2 = new Set(text2.split(/\s+/).filter(w => w.length > 3));
+    
+    // Calculate Jaccard similarity
+    const intersection = new Set([...words1].filter(x => words2.has(x)));
+    const union = new Set([...words1, ...words2]);
+    
+    return intersection.size / union.size;
+}
+
+// Initialize a network graph visualization
+function initNetworkGraph(containerId, relationshipsData, factsData) {
+    const container = document.getElementById(containerId);
+    if (!container) return;
+    
+    const nodes = [];
+    const edges = [];
+    const factsMap = {};
+    
+    // Create a map of facts by ID for quick lookup
+    factsData.forEach(fact => {
+        factsMap[fact.id] = fact;
+    });
+    
+    // Process relationship data to create nodes and edges
+    for (const chunkId in relationshipsData) {
+        const chunk = relationshipsData[chunkId];
+        const relationships = chunk.relationships || {};
+        
+        for (const sourceFactNum in relationships) {
+            const targetFacts = relationships[sourceFactNum];
+            
+            // Add source node if it doesn't exist
+            const sourceFactId = getFactIdFromNumber(sourceFactNum, factsData);
+            if (sourceFactId && !nodes.find(n => n.id === sourceFactId)) {
+                nodes.push({
+                    id: sourceFactId,
+                    label: truncateText(factsMap[sourceFactId]?.text || sourceFactId, 40),
+                    group: 'source'
+                });
+            }
+            
+            // Process each target fact
+            for (const targetFactNum in targetFacts) {
+                const relation = targetFacts[targetFactNum];
+                const targetFactId = getFactIdFromNumber(targetFactNum, factsData);
+                
+                // Add target node if it doesn't exist
+                if (targetFactId && !nodes.find(n => n.id === targetFactId)) {
+                    nodes.push({
+                        id: targetFactId,
+                        label: truncateText(factsMap[targetFactId]?.text || targetFactId, 40),
+                        group: 'target'
+                    });
+                }
+                
+                // Add edge between source and target
+                if (sourceFactId && targetFactId) {
+                    edges.push({
+                        from: sourceFactId,
+                        to: targetFactId,
+                        label: relation.type,
+                        title: `Confidence: ${relation.confidence}`,
+                        arrows: 'to',
+                        width: relation.confidence * 3
+                    });
+                }
+            }
+        }
+    }
+    
+    // Configure vis.js network
+    const data = { nodes: nodes, edges: edges };
+    const options = {
+        nodes: {
+            shape: 'box',
+            margin: 10,
+            font: { size: 12 }
+        },
+        edges: {
+            font: { size: 10, align: 'middle' },
+            smooth: { type: 'continuous' }
+        },
+        physics: {
+            stabilization: true,
+            barnesHut: { gravitationalConstant: -2000, springConstant: 0.001 }
+        },
+        groups: {
+            source: { color: { background: '#D2E5FF' } },
+            target: { color: { background: '#FFC0CB' } }
+        }
+    };
+    
+    // Create the network
+    const network = new vis.Network(container, data, options);
+    
+    // Add click event to show fact details
+    network.on('click', function(params) {
+        if (params.nodes.length) {
+            const factId = params.nodes[0];
+            const factElement = document.getElementById(factId);
+            if (factElement) {
+                factElement.scrollIntoView({ behavior: 'smooth' });
+                factElement.classList.add('highlight');
+                setTimeout(() => factElement.classList.remove('highlight'), 2000);
+            }
+        }
+    });
+}
+
+// Helper to get a fact ID from its numeric reference
+function getFactIdFromNumber(factNum, factsData) {
+    const index = parseInt(factNum, 10);
+    if (!isNaN(index) && index >= 0 && index < factsData.length) {
+        return factsData[index].id;
+    }
+    return null;
+}
+
+// Helper to truncate text for display
+function truncateText(text, maxLength) {
+    if (!text) return '';
+    return text.length > maxLength ? text.substring(0, maxLength) + '...' : text;
+}
+</script>
+{% endblock %}

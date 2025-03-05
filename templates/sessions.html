@@ -1,0 +1,58 @@
+{% extends "layout.html" %}
+
+{% block title %}{{ model }} Sessions{% endblock %}
+
+{% block content %}
+<div class="container">
+    <h2 class="mb-4">{{ model }} Processing Sessions</h2>
+    
+    <p class="mb-4">
+        <a href="/" class="btn btn-outline-secondary btn-sm">
+            &larr; Back to Models
+        </a>
+        <a href="/compare" class="btn btn-primary btn-sm">
+            Compare Sessions
+        </a>
+    </p>
+    
+    <div class="table-responsive">
+        <table class="table table-striped table-hover">
+            <thead>
+                <tr>
+                    <th>Session ID</th>
+                    <th>Date/Time</th>
+                    <th>Actions</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for session in sessions %}
+                <tr>
+                    <td>{{ session }}</td>
+                    <td>
+                        {% if '_' in session %}
+                        {{ session.split('_')[0] | default('Unknown') }}
+                        {% else %}
+                        Unknown
+                        {% endif %}
+                    </td>
+                    <td>
+                        <a href="/api/session/{{ model }}/{{ session }}" class="btn btn-sm btn-info" target="_blank">
+                            View Data
+                        </a>
+                        <a href="/compare?preselect={{ model }}/{{ session }}" class="btn btn-sm btn-primary">
+                            Compare
+                        </a>
+                    </td>
+                </tr>
+                {% else %}
+                <tr>
+                    <td colspan="3" class="text-center">
+                        No sessions found for this model.
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endblock %}

@@ -1,0 +1,42 @@
+{% extends "layout.html" %}
+
+{% block title %}Zettelkasten LLM Pipeline Home{% endblock %}
+
+{% block content %}
+<div class="px-4 py-5 my-5 text-center">
+    <h1 class="display-5 fw-bold">Zettelkasten LLM Pipeline Comparison</h1>
+    <div class="col-lg-6 mx-auto">
+        <p class="lead mb-4">
+            This tool helps you compare the outputs of different LLM pipeline runs.
+            Compare facts, relationships, and chunks generated from different models or configurations.
+        </p>
+        <div class="d-grid gap-2 d-sm-flex justify-content-sm-center">
+            <a href="/compare" class="btn btn-primary btn-lg px-4 gap-3">Compare Sessions</a>
+        </div>
+    </div>
+</div>
+
+<div class="container px-4 py-5">
+    <h2 class="pb-2 border-bottom">Available Models</h2>
+    
+    <div class="row row-cols-1 row-cols-sm-2 row-cols-md-3 g-4 py-5">
+        {% for model in models %}
+        <div class="col d-flex align-items-start">
+            <div>
+                <h3 class="fw-bold mb-0 fs-4">{{ model }}</h3>
+                <p>View all processing sessions for the {{ model }} model</p>
+                <a href="/model/{{ model }}" class="btn btn-primary">
+                    Browse Sessions
+                </a>
+            </div>
+        </div>
+        {% else %}
+        <div class="col-12">
+            <div class="alert alert-warning" role="alert">
+                No model outputs found. Please run the LLM pipeline first.
+            </div>
+        </div>
+        {% endfor %}
+    </div>
+</div>
+{% endblock %}
